@@ -120,15 +120,19 @@ fn setup(mut commands: Commands) {
 
     // Revolute joint with position-controlled motor (servo behavior)
     // Default anchors at body centers (Vector::ZERO)
-    // Use high stiffness for responsive position control.
-    // For AccelerationBased mode, stiffness is multiplied by dt (substep time),
-    // so we need high values for noticeable effect with 50 substeps.
+    //
+    // For AccelerationBased mode:
+    //   target_velocity_change = damping * velocity_error + stiffness * position_error * dt
+    //
+    // Since stiffness is multiplied by dt (~0.0003 with 50 substeps), we need very high
+    // stiffness relative to damping. If damping is too high, the motor will resist motion
+    // before reaching the target.
     commands.spawn((
         RevoluteJoint::new(position_anchor, servo_arm),
         AngularJointMotor {
             target_position: 0.0,
-            stiffness: 1000.0,  // High stiffness for responsive position control
-            damping: 50.0,      // Moderate damping to prevent oscillation
+            stiffness: 10000.0, // Very high stiffness (multiplied by small dt)
+            damping: 1.0,       // Low damping to allow reaching target
             max_torque: Scalar::MAX,
             ..default()
         },
@@ -154,6 +158,7 @@ fn setup(mut commands: Commands) {
             piston_base_sprite,
             Transform::from_xyz(200.0, 0.0, 0.0),
             RigidBody::Static,
+            Position(Vector::new(200.0, 0.0)),
         ))
         .id();
 
@@ -166,6 +171,7 @@ fn setup(mut commands: Commands) {
             Mass(1.0),
             AngularInertia(1.0),
             SleepingDisabled, // Prevent sleeping so motor can always control it
+            Position(Vector::new(200.0, 0.0)),
         ))
         .id();
 

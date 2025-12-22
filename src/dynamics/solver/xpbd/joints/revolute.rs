@@ -217,7 +217,10 @@ impl RevoluteJoint {
 
         // Compute the motor impulse using a PD controller approach.
         let velocity_error = motor.target_velocity - relative_angular_velocity;
-        let position_error = motor.target_position - current_angle;
+
+        // Wrap position error to [-PI, PI] for shortest path rotation.
+        let raw_error = motor.target_position - current_angle;
+        let position_error = (raw_error + PI).rem_euclid(TAU) - PI;
 
         // Compute the desired angular velocity change based on motor parameters.
         let target_velocity_change = match motor.motor_model {
@@ -310,7 +313,10 @@ impl RevoluteJoint {
 
         // Compute the motor impulse using a PD controller approach.
         let velocity_error = motor.target_velocity - relative_angular_velocity;
-        let position_error = motor.target_position - current_angle;
+
+        // Wrap position error to [-PI, PI] for shortest path rotation.
+        let raw_error = motor.target_position - current_angle;
+        let position_error = (raw_error + PI).rem_euclid(TAU) - PI;
 
         // Compute the desired angular velocity change based on motor parameters.
         let target_velocity_change = match motor.motor_model {
