@@ -65,13 +65,17 @@ fn setup(mut commands: Commands) {
             wheel_sprite,
             Transform::from_xyz(-200.0, 0.0, 0.0),
             RigidBody::Dynamic,
-            MassPropertiesBundle::from_shape(&Circle::new(40.0), 1.0),
+            Mass(1.0),
+            AngularInertia(1.0),
         ))
         .id();
 
     // Revolute joint with angular motor
+    // Note: Local anchors must be set for the joint to work properly.
     commands.spawn((
-        RevoluteJoint::new(wheel_anchor, wheel),
+        RevoluteJoint::new(wheel_anchor, wheel)
+            .with_local_anchor1(Vector::ZERO)
+            .with_local_anchor2(Vector::ZERO),
         AngularJointMotor {
             target_velocity: 5.0, // 5 rad/s
             damping: 10.0,
@@ -83,18 +87,24 @@ fn setup(mut commands: Commands) {
     ));
 
     // Add spokes to the wheel for visual rotation feedback
+    // Note: These are attached to the wheel via fixed joints so they rotate together.
     for i in 0..4 {
         let angle = i as f32 * std::f32::consts::FRAC_PI_2;
-        commands.spawn((
-            Sprite {
-                color: Color::srgb(0.7, 0.2, 0.2),
-                custom_size: Some(Vec2::new(60.0, 8.0)),
-                ..default()
-            },
-            Transform::from_xyz(-200.0, 0.0, 1.0).with_rotation(Quat::from_rotation_z(angle)),
-            RigidBody::Dynamic,
-            MassPropertiesBundle::from_shape(&Rectangle::new(60.0, 8.0), 0.1),
-        ));
+        let spoke = commands
+            .spawn((
+                Sprite {
+                    color: Color::srgb(0.7, 0.2, 0.2),
+                    custom_size: Some(Vec2::new(60.0, 8.0)),
+                    ..default()
+                },
+                Transform::from_xyz(-200.0, 0.0, 1.0).with_rotation(Quat::from_rotation_z(angle)),
+                RigidBody::Dynamic,
+                Mass(0.1),
+                AngularInertia(0.1),
+            ))
+            .id();
+        // Attach spoke to the wheel with a fixed joint
+        commands.spawn(FixedJoint::new(wheel, spoke));
     }
 
     // === Prismatic Joint with Linear Motor (right side) ===
@@ -125,13 +135,17 @@ fn setup(mut commands: Commands) {
             piston_sprite,
             Transform::from_xyz(200.0, 0.0, 0.0),
             RigidBody::Dynamic,
-            MassPropertiesBundle::from_shape(&Rectangle::new(60.0, 40.0), 1.0),
+            Mass(1.0),
         ))
         .id();
 
     // Prismatic joint with linear motor
+    // Note: Local anchors must be set for the joint to work properly.
     commands.spawn((
-        PrismaticJoint::new(piston_base, piston).with_slider_axis(Vector::Y),
+        PrismaticJoint::new(piston_base, piston)
+            .with_local_anchor1(Vector::ZERO)
+            .with_local_anchor2(Vector::ZERO)
+            .with_slider_axis(Vector::Y),
         LinearJointMotor {
             target_position: 50.0, // Target 50 units up
             stiffness: 20.0,
@@ -175,13 +189,11 @@ fn control_motors(
             motor.target_velocity -= 1.0;
         }
         if keyboard.just_pressed(KeyCode::Space) {
-            // Toggle motor by setting damping to 0 or restoring it
-            if motor.damping > 0.0 {
-                motor.damping = 0.0;
-                motor.target_velocity = 0.0;
+            // Toggle motor: when "off", keep damping but set target to 0 (braking)
+            if motor.target_velocity != 0.0 {
+                motor.target_velocity = 0.0; // Brake to a stop
             } else {
-                motor.damping = 10.0;
-                motor.target_velocity = 5.0;
+                motor.target_velocity = 5.0; // Resume spinning
             }
         }
     }
@@ -195,13 +207,11 @@ fn control_motors(
             motor.target_position -= 20.0;
         }
         if keyboard.just_pressed(KeyCode::Space) {
-            // Toggle motor
-            if motor.stiffness > 0.0 {
-                motor.stiffness = 0.0;
-                motor.damping = 0.0;
+            // Toggle motor: when "off", set target to 0 (return to center)
+            if motor.target_position != 0.0 {
+                motor.target_position = 0.0; // Return to center
             } else {
-                motor.stiffness = 20.0;
-                motor.damping = 10.0;
+                motor.target_position = 50.0; // Move to target
             }
         }
     }
