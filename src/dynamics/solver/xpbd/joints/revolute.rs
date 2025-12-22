@@ -1,8 +1,11 @@
 use super::PointConstraintShared;
 use crate::{
-    dynamics::solver::{
-        solver_body::{SolverBody, SolverBodyInertia},
-        xpbd::*,
+    dynamics::{
+        joints::{AngularJointMotor, MotorModel},
+        solver::{
+            solver_body::{SolverBody, SolverBodyInertia},
+            xpbd::*,
+        },
     },
     prelude::*,
 };
@@ -27,6 +30,8 @@ pub struct RevoluteJointSolverData {
     pub(super) b2: Vector,
     pub(super) total_align_lagrange: AngularVector,
     pub(super) total_limit_lagrange: AngularVector,
+    /// Accumulated motor Lagrange multiplier.
+    pub(super) total_motor_lagrange: AngularVector,
 }
 
 impl XpbdConstraintSolverData for RevoluteJointSolverData {
@@ -34,6 +39,7 @@ impl XpbdConstraintSolverData for RevoluteJointSolverData {
         self.point_constraint.clear_lagrange_multipliers();
         self.total_align_lagrange = AngularVector::ZERO;
         self.total_limit_lagrange = AngularVector::ZERO;
+        self.total_motor_lagrange = AngularVector::ZERO;
     }
 
     fn total_position_lagrange(&self) -> Vector {
@@ -41,7 +47,7 @@ impl XpbdConstraintSolverData for RevoluteJointSolverData {
     }
 
     fn total_rotation_lagrange(&self) -> AngularVector {
-        self.total_align_lagrange + self.total_limit_lagrange
+        self.total_align_lagrange + self.total_limit_lagrange + self.total_motor_lagrange
     }
 }
 
@@ -178,6 +184,185 @@ impl RevoluteJoint {
             0.0,
             self.limit_compliance,
             dt,
+        );
+    }
+
+    /// Applies motor forces to drive the joint towards the target velocity and/or position.
+    #[cfg(feature = "2d")]
+    pub fn apply_motor(
+        &self,
+        body1: &mut SolverBody,
+        body2: &mut SolverBody,
+        inv_angular_inertia1: SymmetricTensor,
+        inv_angular_inertia2: SymmetricTensor,
+        solver_data: &mut RevoluteJointSolverData,
+        motor: &AngularJointMotor,
+        dt: Scalar,
+    ) {
+        // Compute the current angle.
+        let current_angle =
+            solver_data.rotation_difference + body1.delta_rotation.angle_between(body2.delta_rotation);
+
+        // Compute the angular velocity.
+        // In 2D, angular velocity is a scalar.
+        let relative_angular_velocity = body2.angular_velocity - body1.angular_velocity;
+
+        // Compute generalized inverse masses.
+        let w1 = inv_angular_inertia1;
+        let w2 = inv_angular_inertia2;
+        let w_sum = w1 + w2;
+        if w_sum <= Scalar::EPSILON {
+            return;
+        }
+
+        // Compute the motor impulse using a PD controller approach.
+        let velocity_error = motor.target_velocity - relative_angular_velocity;
+        let position_error = motor.target_position - current_angle;
+
+        // Compute the desired angular velocity change based on motor parameters.
+        let target_velocity_change = match motor.motor_model {
+            MotorModel::AccelerationBased => {
+                // Directly compute velocity change needed.
+                motor.damping * velocity_error + motor.stiffness * position_error * dt
+            }
+            MotorModel::ForceBased => {
+                // Torque = stiffness * position_error + damping * velocity_error
+                // Angular velocity change = Torque * inv_inertia = Torque * w_sum
+                // The dt scaling happens in the correction computation below.
+                (motor.stiffness * position_error + motor.damping * velocity_error) * w_sum
+            }
+        };
+
+        // Convert to angular correction.
+        let correction = target_velocity_change * dt;
+
+        // Skip if correction is too small.
+        if correction.abs() <= Scalar::EPSILON {
+            return;
+        }
+
+        // Compute Lagrange multiplier update.
+        let delta_lagrange = correction / w_sum;
+
+        // Clamp the delta lagrange based on max torque.
+        let delta_lagrange = if motor.max_torque < Scalar::MAX && motor.max_torque > 0.0 {
+            let max_delta = motor.max_torque * dt * dt;
+            let new_lagrange = solver_data.total_motor_lagrange + delta_lagrange;
+            if new_lagrange.abs() > max_delta {
+                let clamped = new_lagrange.clamp(-max_delta, max_delta);
+                clamped - solver_data.total_motor_lagrange
+            } else {
+                delta_lagrange
+            }
+        } else {
+            delta_lagrange
+        };
+
+        solver_data.total_motor_lagrange += delta_lagrange;
+
+        // Apply angular correction.
+        // Positive delta_lagrange increases body2's angular velocity relative to body1.
+        self.apply_angular_lagrange_update(
+            body1,
+            body2,
+            inv_angular_inertia1,
+            inv_angular_inertia2,
+            delta_lagrange,
+        );
+    }
+
+    /// Applies motor forces to drive the joint towards the target velocity and/or position.
+    #[cfg(feature = "3d")]
+    pub fn apply_motor(
+        &self,
+        body1: &mut SolverBody,
+        body2: &mut SolverBody,
+        inv_angular_inertia1: SymmetricTensor,
+        inv_angular_inertia2: SymmetricTensor,
+        solver_data: &mut RevoluteJointSolverData,
+        motor: &AngularJointMotor,
+        dt: Scalar,
+    ) {
+        // Get the hinge axis in world space.
+        let a1 = body1.delta_rotation * solver_data.a1;
+
+        // Compute the current angle using b1 and b2 axes.
+        let b1 = body1.delta_rotation * solver_data.b1;
+        let b2 = body2.delta_rotation * solver_data.b2;
+
+        // Compute angle between b1 and b2 around a1.
+        let sin_angle = b1.cross(b2).dot(a1);
+        let cos_angle = b1.dot(b2);
+        let current_angle = sin_angle.atan2(cos_angle);
+
+        // Compute the angular velocity projected onto the hinge axis.
+        let relative_angular_velocity = (body2.angular_velocity - body1.angular_velocity).dot(a1);
+
+        // Compute generalized inverse masses.
+        let w1 =
+            AngularConstraint::compute_generalized_inverse_mass(self, inv_angular_inertia1, a1);
+        let w2 =
+            AngularConstraint::compute_generalized_inverse_mass(self, inv_angular_inertia2, a1);
+        let w_sum = w1 + w2;
+        if w_sum <= Scalar::EPSILON {
+            return;
+        }
+
+        // Compute the motor impulse using a PD controller approach.
+        let velocity_error = motor.target_velocity - relative_angular_velocity;
+        let position_error = motor.target_position - current_angle;
+
+        // Compute the desired angular velocity change based on motor parameters.
+        let target_velocity_change = match motor.motor_model {
+            MotorModel::AccelerationBased => {
+                // Directly compute velocity change needed.
+                motor.damping * velocity_error + motor.stiffness * position_error * dt
+            }
+            MotorModel::ForceBased => {
+                // Torque = stiffness * position_error + damping * velocity_error
+                // Angular velocity change = Torque * inv_inertia = Torque * w_sum
+                // The dt scaling happens in the correction computation below.
+                (motor.stiffness * position_error + motor.damping * velocity_error) * w_sum
+            }
+        };
+
+        // Convert to angular correction.
+        let correction = target_velocity_change * dt;
+
+        // Skip if correction is too small.
+        if correction.abs() <= Scalar::EPSILON {
+            return;
+        }
+
+        // Compute Lagrange multiplier update.
+        let delta_lagrange = correction / w_sum;
+
+        // Clamp the delta lagrange based on max torque.
+        let delta_lagrange = if motor.max_torque < Scalar::MAX && motor.max_torque > 0.0 {
+            let max_delta = motor.max_torque * dt * dt;
+            let lagrange_magnitude = solver_data.total_motor_lagrange.dot(a1);
+            let new_lagrange = lagrange_magnitude + delta_lagrange;
+            if new_lagrange.abs() > max_delta {
+                let clamped = new_lagrange.clamp(-max_delta, max_delta);
+                clamped - lagrange_magnitude
+            } else {
+                delta_lagrange
+            }
+        } else {
+            delta_lagrange
+        };
+
+        solver_data.total_motor_lagrange += delta_lagrange * a1;
+
+        // Apply angular correction.
+        // Positive delta_lagrange increases body2's angular velocity relative to body1.
+        self.apply_angular_lagrange_update(
+            body1,
+            body2,
+            inv_angular_inertia1,
+            inv_angular_inertia2,
+            delta_lagrange,
+            a1,
         );
     }
 }

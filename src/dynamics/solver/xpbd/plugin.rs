@@ -3,7 +3,7 @@ use core::cmp::Ordering;
 use super::joints::*;
 use crate::{
     dynamics::{
-        joints::EntityConstraint,
+        joints::{AngularJointMotor, EntityConstraint, LinearJointMotor},
         solver::{
             schedule::SubstepSolverSystems,
             solver_body::{SolverBody, SolverBodyInertia},
@@ -80,6 +80,9 @@ impl Plugin for XpbdSolverPlugin {
                 solve_xpbd_joint::<SphericalJoint>,
                 solve_xpbd_joint::<PrismaticJoint>,
                 solve_xpbd_joint::<DistanceJoint>,
+                // Solve motors after regular joint solving.
+                solve_revolute_joint_motor,
+                solve_prismatic_joint_motor,
             )
                 .chain()
                 .in_set(XpbdSolverSystems::SolveConstraints),
@@ -256,5 +259,106 @@ fn writeback_joint_forces<C: Component + EntityConstraint<2> + XpbdConstraint<2>
     for (solver_data, mut forces) in &mut joints {
         forces.set_force(solver_data.total_position_lagrange() * rhs);
         forces.set_torque(solver_data.total_rotation_lagrange() * rhs);
+    }
+}
+
+/// Solves angular motors for revolute joints.
+fn solve_revolute_joint_motor(
+    bodies: Query<(&mut SolverBody, &SolverBodyInertia), Without<RigidBodyDisabled>>,
+    mut joints: Query<
+        (
+            &RevoluteJoint,
+            &mut RevoluteJointSolverData,
+            &AngularJointMotor,
+        ),
+        (Without<RigidBody>, Without<JointDisabled>),
+    >,
+    time: Res<Time>,
+) {
+    let delta_secs = time.delta_seconds_adjusted();
+
+    let mut dummy_body1 = SolverBody::default();
+    let mut dummy_body2 = SolverBody::default();
+
+    for (joint, mut solver_data, motor) in &mut joints {
+        let [entity1, entity2] = joint.entities();
+
+        let (mut body1, mut inertia1) = (&mut dummy_body1, &SolverBodyInertia::DUMMY);
+        let (mut body2, mut inertia2) = (&mut dummy_body2, &SolverBodyInertia::DUMMY);
+
+        // Get the solver bodies for the two entities.
+        if let Ok((body, inertia)) = unsafe { bodies.get_unchecked(entity1) } {
+            body1 = body.into_inner();
+            inertia1 = inertia;
+        }
+        if let Ok((body, inertia)) = unsafe { bodies.get_unchecked(entity2) } {
+            body2 = body.into_inner();
+            inertia2 = inertia;
+        }
+
+        // If a body has a higher dominance, it is treated as a static or kinematic body.
+        match (inertia1.dominance() - inertia2.dominance()).cmp(&0) {
+            Ordering::Greater => inertia1 = &SolverBodyInertia::DUMMY,
+            Ordering::Less => inertia2 = &SolverBodyInertia::DUMMY,
+            _ => {}
+        }
+
+        let inv_angular_inertia1 = inertia1.effective_inv_angular_inertia();
+        let inv_angular_inertia2 = inertia2.effective_inv_angular_inertia();
+
+        joint.apply_motor(
+            body1,
+            body2,
+            inv_angular_inertia1,
+            inv_angular_inertia2,
+            &mut solver_data,
+            motor,
+            delta_secs,
+        );
+    }
+}
+
+/// Solves linear motors for prismatic joints.
+fn solve_prismatic_joint_motor(
+    bodies: Query<(&mut SolverBody, &SolverBodyInertia), Without<RigidBodyDisabled>>,
+    mut joints: Query<
+        (
+            &PrismaticJoint,
+            &mut PrismaticJointSolverData,
+            &LinearJointMotor,
+        ),
+        (Without<RigidBody>, Without<JointDisabled>),
+    >,
+    time: Res<Time>,
+) {
+    let delta_secs = time.delta_seconds_adjusted();
+
+    let mut dummy_body1 = SolverBody::default();
+    let mut dummy_body2 = SolverBody::default();
+
+    for (joint, mut solver_data, motor) in &mut joints {
+        let [entity1, entity2] = joint.entities();
+
+        let (mut body1, mut inertia1) = (&mut dummy_body1, &SolverBodyInertia::DUMMY);
+        let (mut body2, mut inertia2) = (&mut dummy_body2, &SolverBodyInertia::DUMMY);
+
+        // Get the solver bodies for the two entities.
+        if let Ok((body, inertia)) = unsafe { bodies.get_unchecked(entity1) } {
+            body1 = body.into_inner();
+            inertia1 = inertia;
+        }
+        if let Ok((body, inertia)) = unsafe { bodies.get_unchecked(entity2) } {
+            body2 = body.into_inner();
+            inertia2 = inertia;
+        }
+
+        // If a body has a higher dominance, it is treated as a static or kinematic body.
+        match (inertia1.dominance() - inertia2.dominance()).cmp(&0) {
+            Ordering::Greater => inertia1 = &SolverBodyInertia::DUMMY,
+            Ordering::Less => inertia2 = &SolverBodyInertia::DUMMY,
+            _ => {}
+        }
+
+        joint.apply_motor(body1, body2, inertia1, inertia2, &mut solver_data, motor, delta_secs);
     }
 }

@@ -214,13 +214,17 @@ Therefore, they have 3 translational DOF and 3 rotational DOF, a total of 6 DOF.
 
 mod distance;
 mod fixed;
+mod motor;
 mod prismatic;
 mod revolute;
 #[cfg(feature = "3d")]
 mod spherical;
+#[cfg(test)]
+mod tests;
 
 pub use distance::DistanceJoint;
 pub use fixed::FixedJoint;
+pub use motor::{AngularJointMotor, LinearJointMotor, MotorModel};
 pub use prismatic::PrismaticJoint;
 pub use revolute::RevoluteJoint;
 #[cfg(feature = "3d")]
