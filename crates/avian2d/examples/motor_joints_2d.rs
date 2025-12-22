@@ -129,8 +129,8 @@ fn setup(mut commands: Commands) {
             .with_slider_axis(Vector::Y),
         LinearJointMotor {
             target_position: 50.0, // Target 50 units up
-            stiffness: 20.0,
-            damping: 10.0,
+            stiffness: 2000.0,
+            damping: 0.2,
             max_force: 5000.0,
             motor_model: MotorModel::AccelerationBased,
             ..default()
@@ -182,10 +182,10 @@ fn control_motors(
     // Control prismatic motor with W/S keys
     for mut motor in prismatic_motors.iter_mut() {
         if keyboard.just_pressed(KeyCode::KeyW) {
-            motor.target_position += 20.0;
+            motor.target_position += 25.0;
         }
         if keyboard.just_pressed(KeyCode::KeyS) {
-            motor.target_position -= 20.0;
+            motor.target_position -= 25.0;
         }
         if keyboard.just_pressed(KeyCode::Space) {
             // Toggle motor: when "off", set target to 0 (return to center)
