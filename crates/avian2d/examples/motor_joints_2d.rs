@@ -78,7 +78,7 @@ fn setup(mut commands: Commands) {
             .with_local_anchor2(Vector::ZERO),
         AngularJointMotor {
             target_velocity: 5.0, // 5 rad/s
-            damping: 10.0,
+            damping: 1.0,         // Lower gain for stable approach (1.0 ≈ reach target in ~1 second)
             max_torque: 1000.0,
             motor_model: MotorModel::AccelerationBased,
             ..default()
@@ -86,26 +86,21 @@ fn setup(mut commands: Commands) {
         RevoluteMotorJoint,
     ));
 
-    // Add spokes to the wheel for visual rotation feedback
-    // Note: These are attached to the wheel via fixed joints so they rotate together.
-    for i in 0..4 {
-        let angle = i as f32 * std::f32::consts::FRAC_PI_2;
-        let spoke = commands
-            .spawn((
+    // Add spokes to the wheel for visual rotation feedback.
+    // These are children of the wheel entity, so they follow its transform automatically.
+    commands.entity(wheel).with_children(|parent| {
+        for i in 0..4 {
+            let angle = i as f32 * std::f32::consts::FRAC_PI_2;
+            parent.spawn((
                 Sprite {
                     color: Color::srgb(0.7, 0.2, 0.2),
                     custom_size: Some(Vec2::new(60.0, 8.0)),
                     ..default()
                 },
-                Transform::from_xyz(-200.0, 0.0, 1.0).with_rotation(Quat::from_rotation_z(angle)),
-                RigidBody::Dynamic,
-                Mass(0.1),
-                AngularInertia(0.1),
-            ))
-            .id();
-        // Attach spoke to the wheel with a fixed joint
-        commands.spawn(FixedJoint::new(wheel, spoke));
-    }
+                Transform::from_rotation(Quat::from_rotation_z(angle)),
+            ));
+        }
+    });
 
     // === Prismatic Joint with Linear Motor (right side) ===
     let piston_base_sprite = Sprite {
