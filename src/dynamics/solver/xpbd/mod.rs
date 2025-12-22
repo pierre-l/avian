@@ -307,6 +307,11 @@ pub trait XpbdConstraintSolverData {
     fn total_rotation_lagrange(&self) -> AngularVector {
         AngularVector::ZERO
     }
+
+    /// Returns the total Lagrange multiplier accumulated by the motor, if any.
+    fn total_motor_lagrange(&self) -> Scalar {
+        0.0
+    }
 }
 
 /// A trait for all XPBD [constraints](self#constraints).
