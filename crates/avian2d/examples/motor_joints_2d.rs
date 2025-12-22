@@ -1,11 +1,13 @@
 //! Demonstrates motor joints in 2D.
 //!
-//! - Left side: Revolute joint with angular motor (spinning wheel)
+//! - Left side: Revolute joint with velocity-controlled angular motor (spinning wheel)
+//! - Center: Revolute joint with position-controlled angular motor (servo)
 //! - Right side: Prismatic joint with linear motor (piston)
 //!
 //! Controls:
-//! - Arrow keys: Adjust revolute motor target velocity
-//! - W/S: Adjust prismatic motor target position
+//! - Arrow Up/Down: Adjust left motor target velocity
+//! - A/D: Adjust center motor target angle
+//! - W/S: Adjust right motor target position
 //! - Space: Toggle motors on/off
 
 use avian2d::{math::*, prelude::*};
@@ -28,7 +30,10 @@ fn main() {
 }
 
 #[derive(Component)]
-struct RevoluteMotorJoint;
+struct VelocityMotorJoint;
+
+#[derive(Component)]
+struct PositionMotorJoint;
 
 #[derive(Component)]
 struct PrismaticMotorJoint;
@@ -39,15 +44,9 @@ struct UiText;
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
 
-    // === Revolute Joint with Angular Motor (left side) ===
-    let wheel_sprite = Sprite {
-        color: Color::srgb(0.9, 0.3, 0.3),
-        custom_size: Some(Vec2::splat(80.0)),
-        ..default()
-    };
-
+    // === Velocity-Controlled Revolute Joint (left side) ===
     // Static anchor for the wheel
-    let wheel_anchor = commands
+    let velocity_anchor = commands
         .spawn((
             Sprite {
                 color: Color::srgb(0.5, 0.5, 0.5),
@@ -60,31 +59,80 @@ fn setup(mut commands: Commands) {
         .id();
 
     // Spinning wheel
-    let wheel = commands
+    let velocity_wheel = commands
         .spawn((
-            wheel_sprite,
+            Sprite {
+                color: Color::srgb(0.9, 0.3, 0.3),
+                custom_size: Some(Vec2::splat(80.0)),
+                ..default()
+            },
             Transform::from_xyz(-200.0, 0.0, 0.0),
             RigidBody::Dynamic,
             Mass(1.0),
             AngularInertia(1.0),
-            SleepingDisabled, // Prevent sleeping so motor can always control it
+            SleepingDisabled,
         ))
         .id();
 
-    // Revolute joint with angular motor
-    // Note: Local anchors must be set for the joint to work properly.
+    // Revolute joint with velocity-controlled motor
+    // Note: Default anchors are at body centers (Vector::ZERO), which is correct here.
     commands.spawn((
-        RevoluteJoint::new(wheel_anchor, wheel)
-            .with_local_anchor1(Vector::ZERO)
-            .with_local_anchor2(Vector::ZERO),
+        RevoluteJoint::new(velocity_anchor, velocity_wheel),
         AngularJointMotor {
-            target_velocity: 5.0, // 5 rad/s
-            damping: 1.0,         // Lower gain for stable approach (1.0 ≈ reach target in ~1 second)
+            target_velocity: 5.0,
+            damping: 1.0,
             max_torque: 1000.0,
             motor_model: MotorModel::AccelerationBased,
             ..default()
         },
-        RevoluteMotorJoint,
+        VelocityMotorJoint,
+    ));
+
+    // === Position-Controlled Revolute Joint (center) ===
+    // Static anchor for the servo
+    let position_anchor = commands
+        .spawn((
+            Sprite {
+                color: Color::srgb(0.5, 0.5, 0.5),
+                custom_size: Some(Vec2::splat(20.0)),
+                ..default()
+            },
+            Transform::from_xyz(0.0, 0.0, 0.0),
+            RigidBody::Static,
+        ))
+        .id();
+
+    // Servo arm - also positioned at anchor, rotates around its center
+    let servo_arm = commands
+        .spawn((
+            Sprite {
+                color: Color::srgb(0.3, 0.5, 0.9),
+                custom_size: Some(Vec2::new(100.0, 20.0)),
+                ..default()
+            },
+            Transform::from_xyz(0.0, 0.0, 0.0),
+            RigidBody::Dynamic,
+            Mass(1.0),
+            AngularInertia(1.0),
+            SleepingDisabled,
+        ))
+        .id();
+
+    // Revolute joint with position-controlled motor (servo behavior)
+    // Default anchors at body centers (Vector::ZERO)
+    // Use high stiffness for responsive position control.
+    // For AccelerationBased mode, stiffness is multiplied by dt (substep time),
+    // so we need high values for noticeable effect with 50 substeps.
+    commands.spawn((
+        RevoluteJoint::new(position_anchor, servo_arm),
+        AngularJointMotor {
+            target_position: 0.0,
+            stiffness: 1000.0,  // High stiffness for responsive position control
+            damping: 50.0,      // Moderate damping to prevent oscillation
+            max_torque: Scalar::MAX,
+            ..default()
+        },
+        PositionMotorJoint,
     ));
 
     // === Prismatic Joint with Linear Motor (right side) ===
@@ -116,16 +164,15 @@ fn setup(mut commands: Commands) {
             Transform::from_xyz(200.0, 0.0, 0.0),
             RigidBody::Dynamic,
             Mass(1.0),
+            AngularInertia(1.0),
             SleepingDisabled, // Prevent sleeping so motor can always control it
         ))
         .id();
 
     // Prismatic joint with linear motor
-    // Note: Local anchors must be set for the joint to work properly.
+    // Default anchors at body centers (Vector::ZERO)
     commands.spawn((
         PrismaticJoint::new(piston_base, piston)
-            .with_local_anchor1(Vector::ZERO)
-            .with_local_anchor2(Vector::ZERO)
             .with_slider_axis(Vector::Y),
         LinearJointMotor {
             target_position: 50.0, // Target 50 units up
@@ -140,7 +187,7 @@ fn setup(mut commands: Commands) {
 
     // UI Text
     commands.spawn((
-        Text::new("Motor Joints Demo\n\nArrow Up/Down: Revolute motor speed\nW/S: Prismatic motor position\nSpace: Toggle motors\n\nRevolute: 5.0 rad/s\nPrismatic: 50.0 units"),
+        Text::new("Motor Joints Demo\n\nArrow Up/Down: Velocity motor speed\nA/D: Position motor angle\nW/S: Prismatic motor position\nSpace: Reset motors\n\nVelocity: 5.0 rad/s\nPosition: 0.00 rad\nPrismatic: 50.0 units"),
         TextFont {
             font_size: 18.0,
             ..default()
@@ -158,11 +205,12 @@ fn setup(mut commands: Commands) {
 
 fn control_motors(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut revolute_motors: Query<&mut AngularJointMotor, With<RevoluteMotorJoint>>,
+    mut velocity_motors: Query<&mut AngularJointMotor, With<VelocityMotorJoint>>,
+    mut position_motors: Query<&mut AngularJointMotor, (With<PositionMotorJoint>, Without<VelocityMotorJoint>)>,
     mut prismatic_motors: Query<&mut LinearJointMotor, With<PrismaticMotorJoint>>,
 ) {
-    // Control revolute motor with arrow keys
-    for mut motor in revolute_motors.iter_mut() {
+    // Control velocity motor with arrow keys
+    for mut motor in velocity_motors.iter_mut() {
         if keyboard.just_pressed(KeyCode::ArrowUp) {
             motor.target_velocity += 1.0;
         }
@@ -170,12 +218,24 @@ fn control_motors(
             motor.target_velocity -= 1.0;
         }
         if keyboard.just_pressed(KeyCode::Space) {
-            // Toggle motor: when "off", keep damping but set target to 0 (braking)
             if motor.target_velocity != 0.0 {
-                motor.target_velocity = 0.0; // Brake to a stop
+                motor.target_velocity = 0.0;
             } else {
-                motor.target_velocity = 5.0; // Resume spinning
+                motor.target_velocity = 5.0;
             }
+        }
+    }
+
+    // Control position motor with A/D keys
+    for mut motor in position_motors.iter_mut() {
+        if keyboard.just_pressed(KeyCode::KeyA) {
+            motor.target_position += 0.5; // Rotate counter-clockwise
+        }
+        if keyboard.just_pressed(KeyCode::KeyD) {
+            motor.target_position -= 0.5; // Rotate clockwise
+        }
+        if keyboard.just_pressed(KeyCode::Space) {
+            motor.target_position = 0.0; // Return to center
         }
     }
 
@@ -188,25 +248,30 @@ fn control_motors(
             motor.target_position -= 25.0;
         }
         if keyboard.just_pressed(KeyCode::Space) {
-            // Toggle motor: when "off", set target to 0 (return to center)
             if motor.target_position != 0.0 {
-                motor.target_position = 0.0; // Return to center
+                motor.target_position = 0.0;
             } else {
-                motor.target_position = 50.0; // Move to target
+                motor.target_position = 50.0;
             }
         }
     }
 }
 
 fn update_ui(
-    revolute_motors: Query<&AngularJointMotor, With<RevoluteMotorJoint>>,
+    velocity_motors: Query<&AngularJointMotor, With<VelocityMotorJoint>>,
+    position_motors: Query<&AngularJointMotor, With<PositionMotorJoint>>,
     prismatic_motors: Query<&LinearJointMotor, With<PrismaticMotorJoint>>,
     mut ui_text: Query<&mut Text, With<UiText>>,
 ) {
-    let revolute_vel = revolute_motors
+    let velocity_target = velocity_motors
         .iter()
         .next()
         .map(|m| m.target_velocity)
+        .unwrap_or(0.0);
+    let position_target = position_motors
+        .iter()
+        .next()
+        .map(|m| m.target_position)
         .unwrap_or(0.0);
     let prismatic_pos = prismatic_motors
         .iter()
@@ -217,12 +282,14 @@ fn update_ui(
     for mut text in ui_text.iter_mut() {
         text.0 = format!(
             "Motor Joints Demo\n\n\
-             Arrow Up/Down: Revolute motor speed\n\
+             Arrow Up/Down: Velocity motor speed\n\
+             A/D: Position motor angle\n\
              W/S: Prismatic motor position\n\
-             Space: Toggle motors\n\n\
-             Revolute: {:.1} rad/s\n\
+             Space: Reset motors\n\n\
+             Velocity: {:.1} rad/s\n\
+             Position: {:.2} rad\n\
              Prismatic: {:.1} units",
-            revolute_vel, prismatic_pos
+            velocity_target, position_target, prismatic_pos
         );
     }
 }
