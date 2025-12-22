@@ -67,6 +67,7 @@ fn setup(mut commands: Commands) {
             RigidBody::Dynamic,
             Mass(1.0),
             AngularInertia(1.0),
+            SleepingDisabled, // Prevent sleeping so motor can always control it
         ))
         .id();
 
@@ -85,22 +86,6 @@ fn setup(mut commands: Commands) {
         },
         RevoluteMotorJoint,
     ));
-
-    // Add spokes to the wheel for visual rotation feedback.
-    // These are children of the wheel entity, so they follow its transform automatically.
-    commands.entity(wheel).with_children(|parent| {
-        for i in 0..4 {
-            let angle = i as f32 * std::f32::consts::FRAC_PI_2;
-            parent.spawn((
-                Sprite {
-                    color: Color::srgb(0.7, 0.2, 0.2),
-                    custom_size: Some(Vec2::new(60.0, 8.0)),
-                    ..default()
-                },
-                Transform::from_rotation(Quat::from_rotation_z(angle)),
-            ));
-        }
-    });
 
     // === Prismatic Joint with Linear Motor (right side) ===
     let piston_base_sprite = Sprite {
@@ -131,6 +116,7 @@ fn setup(mut commands: Commands) {
             Transform::from_xyz(200.0, 0.0, 0.0),
             RigidBody::Dynamic,
             Mass(1.0),
+            SleepingDisabled, // Prevent sleeping so motor can always control it
         ))
         .id();
 
