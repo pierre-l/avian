@@ -13,26 +13,25 @@
 /*
   Comparison: Avian vs Rapier Motor Implementation
 
-  | Issue                          | Avian                                     | Rapier                                                                               |
-  |--------------------------------|-------------------------------------------|--------------------------------------------------------------------------------------|
-  | Motors solved separately       | Yes - after constraints (plugin.rs:84-85) | No - motors built as constraints in same pass (joint_velocity_constraint.rs:170-204) |
-  | No warm starting               | Yes - cleared each frame                  | No - impulses written back (writeback_impulses at line 354-356)                      |
-  | Stiffness scaled by substep dt | Yes - stiffness * position_error * dt     | No - uses CFM/ERP formulation that's dt-independent (motor_model.rs:44-47)           |
-  | Max force scaling issues       | Yes - max_force * dt * dt                 | No - uses max_impulse directly in constraint bounds                                  |
-  | No SphericalJoint motor        | Yes                                       | No - per-axis motors via joint.motors[i] array                                       |
-  | Single-axis only               | Yes                                       | No - GenericJoint has motors per DOF                                                 |
-  | No motor state feedback        | Fixed - JointForces::motor_force()        | joint.data.motors[i].impulse stores current impulse                                  |
+  | Issue                          | Avian                                                 | Rapier                                                                               |
+  |--------------------------------|-------------------------------------------------------|--------------------------------------------------------------------------------------|
+  | Motors solved separately       | Fixed - solved in same pass via XpbdMotorConstraint   | No - motors built as constraints in same pass (joint_velocity_constraint.rs:170-204) |
+  | No warm starting               | Yes - cleared each frame                              | No - impulses written back (writeback_impulses at line 354-356)                      |
+  | Stiffness scaled by substep dt | Yes - stiffness * position_error * dt                 | No - uses CFM/ERP formulation that's dt-independent (motor_model.rs:44-47)           |
+  | Max force scaling issues       | Yes - max_force * dt * dt                             | No - uses max_impulse directly in constraint bounds                                  |
+  | No SphericalJoint motor        | Yes                                                   | No - per-axis motors via joint.motors[i] array                                       |
+  | Single-axis only               | Yes                                                   | No - GenericJoint has motors per DOF                                                 |
+  | No motor state feedback        | Fixed - JointForces::motor_force()                    | joint.data.motors[i].impulse stores current impulse                                  |
 
   Key Architectural Differences
 
   Rapier uses a unified constraint system where motors, limits, and locked DOFs are all JointConstraint instances solved together.
-  Avian treats motors as a separate post-processing step after XPBD constraint solving.
+  Avian now solves motors in the same pass as joint constraints via solve_xpbd_joint_with_motor(), improving coupling.
 
-  Rapier's implementation avoids most of these issues through:
-  1. Unified constraint formulation (motors aren't special-cased)
-  2. CFM/ERP coefficients that naturally handle timestep independence
-  3. Warm starting via impulse writeback
-  4. Per-axis motor configuration on generic joints
+  Remaining differences from Rapier:
+  1. CFM/ERP coefficients for timestep independence (Avian still uses dt-scaled stiffness)
+  2. Warm starting via impulse writeback
+  3. Per-axis motor configuration on generic joints
 */
 
 use avian2d::{math::*, prelude::*};
