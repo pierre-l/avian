@@ -26,6 +26,19 @@ pub enum MotorModel {
 ///
 /// For velocity control, set [`target_velocity`](Self::target_velocity) with zero [`stiffness`](Self::stiffness).
 /// For position control, set [`target_position`](Self::target_position) with non-zero [`stiffness`](Self::stiffness).
+///
+/// # Timestep-Independent Spring-Damper
+///
+/// For position control that behaves consistently regardless of substep count, use
+/// [`with_spring_parameters`](Self::with_spring_parameters) to set `frequency` and `damping_ratio`
+/// instead of raw `stiffness` and `damping`. This uses an implicit Euler integration
+/// that provides stable, predictable spring-damper behavior.
+///
+/// ```ignore
+/// AngularJointMotor::new(0.0)
+///     .with_spring_parameters(2.0, 0.7) // 2 Hz, critically damped
+///     .with_target_position(target_angle)
+/// ```
 #[derive(Component, Clone, Copy, Debug, PartialEq, Reflect)]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serialize", reflect(Serialize, Deserialize))]
@@ -36,13 +49,32 @@ pub struct AngularJointMotor {
     /// The target angle (rad) for position control. Only used when `stiffness` is non-zero.
     pub target_position: Scalar,
     /// The stiffness coefficient for position control (N·m/rad). Set to zero for pure velocity control.
+    ///
+    /// Note: If [`frequency`](Self::frequency) is set, it takes precedence over this value.
     pub stiffness: Scalar,
     /// The damping coefficient (N·m·s/rad).
+    ///
+    /// Note: If [`damping_ratio`](Self::damping_ratio) is set, it takes precedence over this value.
     pub damping: Scalar,
     /// The maximum torque the motor can apply (N·m).
     pub max_torque: Scalar,
     /// The motor model used for computing the motor torque.
     pub motor_model: MotorModel,
+    /// The natural frequency of the spring-damper system in Hz.
+    ///
+    /// When set, this provides timestep-independent spring behavior using implicit Euler integration.
+    /// Use [`with_spring_parameters`](Self::with_spring_parameters) to set this along with `damping_ratio`.
+    pub frequency: Option<Scalar>,
+    /// The damping ratio for the spring-damper system.
+    ///
+    /// - 0.0 = no damping (oscillates forever)
+    /// - 1.0 = critically damped (fastest approach without overshoot)
+    /// - > 1.0 = overdamped (slow approach without overshoot)
+    /// - < 1.0 = underdamped (overshoots and oscillates)
+    ///
+    /// When set, this provides timestep-independent damping behavior using implicit Euler integration.
+    /// Use [`with_spring_parameters`](Self::with_spring_parameters) to set this along with `frequency`.
+    pub damping_ratio: Option<Scalar>,
 }
 
 impl Default for AngularJointMotor {
@@ -54,6 +86,8 @@ impl Default for AngularJointMotor {
             damping: 0.0,
             max_torque: Scalar::MAX,
             motor_model: MotorModel::default(),
+            frequency: None,
+            damping_ratio: None,
         }
     }
 }
@@ -71,6 +105,8 @@ impl AngularJointMotor {
             damping: 0.0,
             max_torque: Scalar::MAX,
             motor_model: MotorModel::AccelerationBased,
+            frequency: None,
+            damping_ratio: None,
         }
     }
 
@@ -86,6 +122,8 @@ impl AngularJointMotor {
             damping: 0.0,
             max_torque: Scalar::MAX,
             motor_model: MotorModel::AccelerationBased,
+            frequency: None,
+            damping_ratio: None,
         }
     }
 
@@ -128,6 +166,53 @@ impl AngularJointMotor {
         self.motor_model = model;
         self
     }
+
+    /// Sets the spring-damper parameters for timestep-independent position control.
+    ///
+    /// This uses an implicit Euler integration formula that provides stable, predictable
+    /// spring-damper behavior regardless of the physics substep count.
+    ///
+    /// # Parameters
+    ///
+    /// - `frequency`: The natural frequency of the spring in Hz. Higher values create stiffer springs.
+    ///   A frequency of 1.0 Hz means the spring completes one oscillation per second (if underdamped).
+    /// - `damping_ratio`: The damping ratio.
+    ///   - 0.0 = no damping (oscillates forever)
+    ///   - 1.0 = critically damped (fastest approach without overshoot)
+    ///   - > 1.0 = overdamped (slower approach without overshoot)
+    ///   - < 1.0 = underdamped (overshoots and oscillates)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Create a motor that acts like a critically damped spring at 2 Hz
+    /// let motor = AngularJointMotor::new(0.0)
+    ///     .with_spring_parameters(2.0, 1.0)
+    ///     .with_target_position(target_angle);
+    /// ```
+    #[inline]
+    pub const fn with_spring_parameters(mut self, frequency: Scalar, damping_ratio: Scalar) -> Self {
+        self.frequency = Some(frequency);
+        self.damping_ratio = Some(damping_ratio);
+        self
+    }
+
+    /// Sets the target position for spring-damper control.
+    ///
+    /// This is similar to [`with_position_target`](Self::with_position_target) but doesn't
+    /// require setting stiffness, which is useful when using spring parameters via
+    /// [`with_spring_parameters`](Self::with_spring_parameters).
+    #[inline]
+    pub const fn with_target_position_value(mut self, target_position: Scalar) -> Self {
+        self.target_position = target_position;
+        self
+    }
+
+    /// Returns `true` if this motor uses spring-damper parameters (frequency and damping_ratio).
+    #[inline]
+    pub const fn uses_spring_parameters(&self) -> bool {
+        self.frequency.is_some()
+    }
 }
 
 /// A motor for driving the linear motion of a [`PrismaticJoint`].
@@ -137,6 +222,19 @@ impl AngularJointMotor {
 ///
 /// For velocity control, set [`target_velocity`](Self::target_velocity) with zero [`stiffness`](Self::stiffness).
 /// For position control, set [`target_position`](Self::target_position) with non-zero [`stiffness`](Self::stiffness).
+///
+/// # Timestep-Independent Spring-Damper
+///
+/// For position control that behaves consistently regardless of substep count, use
+/// [`with_spring_parameters`](Self::with_spring_parameters) to set `frequency` and `damping_ratio`
+/// instead of raw `stiffness` and `damping`. This uses an implicit Euler integration
+/// that provides stable, predictable spring-damper behavior.
+///
+/// ```ignore
+/// LinearJointMotor::new(0.0)
+///     .with_spring_parameters(2.0, 0.7) // 2 Hz, critically damped
+///     .with_target_position(target_position)
+/// ```
 #[derive(Component, Clone, Copy, Debug, PartialEq, Reflect)]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serialize", reflect(Serialize, Deserialize))]
@@ -147,13 +245,32 @@ pub struct LinearJointMotor {
     /// The target position (m) for position control. Only used when `stiffness` is non-zero.
     pub target_position: Scalar,
     /// The stiffness coefficient for position control (N/m). Set to zero for pure velocity control.
+    ///
+    /// Note: If [`frequency`](Self::frequency) is set, it takes precedence over this value.
     pub stiffness: Scalar,
     /// The damping coefficient (N·s/m).
+    ///
+    /// Note: If [`damping_ratio`](Self::damping_ratio) is set, it takes precedence over this value.
     pub damping: Scalar,
     /// The maximum force the motor can apply (N).
     pub max_force: Scalar,
     /// The motor model used for computing the motor force.
     pub motor_model: MotorModel,
+    /// The natural frequency of the spring-damper system in Hz.
+    ///
+    /// When set, this provides timestep-independent spring behavior using implicit Euler integration.
+    /// Use [`with_spring_parameters`](Self::with_spring_parameters) to set this along with `damping_ratio`.
+    pub frequency: Option<Scalar>,
+    /// The damping ratio for the spring-damper system.
+    ///
+    /// - 0.0 = no damping (oscillates forever)
+    /// - 1.0 = critically damped (fastest approach without overshoot)
+    /// - > 1.0 = overdamped (slow approach without overshoot)
+    /// - < 1.0 = underdamped (overshoots and oscillates)
+    ///
+    /// When set, this provides timestep-independent damping behavior using implicit Euler integration.
+    /// Use [`with_spring_parameters`](Self::with_spring_parameters) to set this along with `frequency`.
+    pub damping_ratio: Option<Scalar>,
 }
 
 impl Default for LinearJointMotor {
@@ -165,6 +282,8 @@ impl Default for LinearJointMotor {
             damping: 0.0,
             max_force: Scalar::MAX,
             motor_model: MotorModel::default(),
+            frequency: None,
+            damping_ratio: None,
         }
     }
 }
@@ -182,6 +301,8 @@ impl LinearJointMotor {
             damping: 0.0,
             max_force: Scalar::MAX,
             motor_model: MotorModel::AccelerationBased,
+            frequency: None,
+            damping_ratio: None,
         }
     }
 
@@ -197,6 +318,8 @@ impl LinearJointMotor {
             damping: 0.0,
             max_force: Scalar::MAX,
             motor_model: MotorModel::AccelerationBased,
+            frequency: None,
+            damping_ratio: None,
         }
     }
 
@@ -238,5 +361,52 @@ impl LinearJointMotor {
     pub const fn with_motor_model(mut self, model: MotorModel) -> Self {
         self.motor_model = model;
         self
+    }
+
+    /// Sets the spring-damper parameters for timestep-independent position control.
+    ///
+    /// This uses an implicit Euler integration formula that provides stable, predictable
+    /// spring-damper behavior regardless of the physics substep count.
+    ///
+    /// # Parameters
+    ///
+    /// - `frequency`: The natural frequency of the spring in Hz. Higher values create stiffer springs.
+    ///   A frequency of 1.0 Hz means the spring completes one oscillation per second (if underdamped).
+    /// - `damping_ratio`: The damping ratio.
+    ///   - 0.0 = no damping (oscillates forever)
+    ///   - 1.0 = critically damped (fastest approach without overshoot)
+    ///   - > 1.0 = overdamped (slower approach without overshoot)
+    ///   - < 1.0 = underdamped (overshoots and oscillates)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Create a motor that acts like a critically damped spring at 2 Hz
+    /// let motor = LinearJointMotor::new(0.0)
+    ///     .with_spring_parameters(2.0, 1.0)
+    ///     .with_target_position(target_position);
+    /// ```
+    #[inline]
+    pub const fn with_spring_parameters(mut self, frequency: Scalar, damping_ratio: Scalar) -> Self {
+        self.frequency = Some(frequency);
+        self.damping_ratio = Some(damping_ratio);
+        self
+    }
+
+    /// Sets the target position for spring-damper control.
+    ///
+    /// This is similar to [`with_position_target`](Self::with_position_target) but doesn't
+    /// require setting stiffness, which is useful when using spring parameters via
+    /// [`with_spring_parameters`](Self::with_spring_parameters).
+    #[inline]
+    pub const fn with_target_position_value(mut self, target_position: Scalar) -> Self {
+        self.target_position = target_position;
+        self
+    }
+
+    /// Returns `true` if this motor uses spring-damper parameters (frequency and damping_ratio).
+    #[inline]
+    pub const fn uses_spring_parameters(&self) -> bool {
+        self.frequency.is_some()
     }
 }

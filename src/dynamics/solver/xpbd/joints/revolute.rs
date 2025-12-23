@@ -30,8 +30,11 @@ pub struct RevoluteJointSolverData {
     pub(super) b2: Vector,
     pub(super) total_align_lagrange: AngularVector,
     pub(super) total_limit_lagrange: AngularVector,
-    /// Accumulated motor Lagrange multiplier.
+    /// Accumulated motor Lagrange multiplier for this frame.
     pub(super) total_motor_lagrange: AngularVector,
+    /// Motor Lagrange multiplier from the previous frame, used for warm starting.
+    /// This is zeroed after being applied in the first substep.
+    pub(super) warm_start_motor_lagrange: AngularVector,
 }
 
 impl XpbdConstraintSolverData for RevoluteJointSolverData {
@@ -39,6 +42,8 @@ impl XpbdConstraintSolverData for RevoluteJointSolverData {
         self.point_constraint.clear_lagrange_multipliers();
         self.total_align_lagrange = AngularVector::ZERO;
         self.total_limit_lagrange = AngularVector::ZERO;
+        // Save motor lagrange for warm starting before clearing.
+        self.warm_start_motor_lagrange = self.total_motor_lagrange;
         self.total_motor_lagrange = AngularVector::ZERO;
     }
 
@@ -183,6 +188,22 @@ impl XpbdMotorConstraint<2> for RevoluteJoint {
             dt,
         );
     }
+
+    fn warm_start_motor(
+        &self,
+        _bodies: [&mut SolverBody; 2],
+        _inertias: [&SolverBodyInertia; 2],
+        solver_data: &mut RevoluteJointSolverData,
+        _dt: Scalar,
+        _warm_start_coefficient: Scalar,
+    ) {
+        // TODO: Motor warm starting needs more investigation.
+        // Motors are active drivers rather than passive constraints, so the
+        // standard warm starting approach (apply previous impulse as initial guess)
+        // may cause overshoot when the motor continues to apply force.
+        // For now, we just clear the stored lagrange without applying it.
+        solver_data.warm_start_motor_lagrange = AngularVector::ZERO;
+    }
 }
 
 impl RevoluteJoint {
@@ -263,16 +284,33 @@ impl RevoluteJoint {
         let position_error = (raw_error + PI).rem_euclid(TAU) - PI;
 
         // Compute the desired angular velocity change based on motor parameters.
-        let target_velocity_change = match motor.motor_model {
-            MotorModel::AccelerationBased => {
-                // Directly compute velocity change needed.
-                motor.damping * velocity_error + motor.stiffness * position_error * dt
-            }
-            MotorModel::ForceBased => {
-                // Torque = stiffness * position_error + damping * velocity_error
-                // Angular velocity change = Torque * inv_inertia = Torque * w_sum
-                // The dt scaling happens in the correction computation below.
-                (motor.stiffness * position_error + motor.damping * velocity_error) * w_sum
+        let target_velocity_change = if let (Some(frequency), Some(damping_ratio)) =
+            (motor.frequency, motor.damping_ratio)
+        {
+            // Use timestep-independent implicit Euler formulation.
+            // This provides stable spring-damper behavior regardless of substep count.
+            let omega = TAU * frequency;
+            let omega_sq = omega * omega;
+            let two_zeta_omega = 2.0 * damping_ratio * omega;
+
+            // Implicit Euler denominator for stability.
+            let inv_denominator = 1.0 / (1.0 + two_zeta_omega * dt + omega_sq * dt * dt);
+
+            // Compute velocity change with implicit Euler integration.
+            (omega_sq * position_error + two_zeta_omega * velocity_error) * dt * inv_denominator
+        } else {
+            // Use the legacy stiffness/damping formulation.
+            match motor.motor_model {
+                MotorModel::AccelerationBased => {
+                    // Directly compute velocity change needed.
+                    motor.damping * velocity_error + motor.stiffness * position_error * dt
+                }
+                MotorModel::ForceBased => {
+                    // Torque = stiffness * position_error + damping * velocity_error
+                    // Angular velocity change = Torque * inv_inertia = Torque * w_sum
+                    // The dt scaling happens in the correction computation below.
+                    (motor.stiffness * position_error + motor.damping * velocity_error) * w_sum
+                }
             }
         };
 
@@ -359,16 +397,33 @@ impl RevoluteJoint {
         let position_error = (raw_error + PI).rem_euclid(TAU) - PI;
 
         // Compute the desired angular velocity change based on motor parameters.
-        let target_velocity_change = match motor.motor_model {
-            MotorModel::AccelerationBased => {
-                // Directly compute velocity change needed.
-                motor.damping * velocity_error + motor.stiffness * position_error * dt
-            }
-            MotorModel::ForceBased => {
-                // Torque = stiffness * position_error + damping * velocity_error
-                // Angular velocity change = Torque * inv_inertia = Torque * w_sum
-                // The dt scaling happens in the correction computation below.
-                (motor.stiffness * position_error + motor.damping * velocity_error) * w_sum
+        let target_velocity_change = if let (Some(frequency), Some(damping_ratio)) =
+            (motor.frequency, motor.damping_ratio)
+        {
+            // Use timestep-independent implicit Euler formulation.
+            // This provides stable spring-damper behavior regardless of substep count.
+            let omega = TAU * frequency;
+            let omega_sq = omega * omega;
+            let two_zeta_omega = 2.0 * damping_ratio * omega;
+
+            // Implicit Euler denominator for stability.
+            let inv_denominator = 1.0 / (1.0 + two_zeta_omega * dt + omega_sq * dt * dt);
+
+            // Compute velocity change with implicit Euler integration.
+            (omega_sq * position_error + two_zeta_omega * velocity_error) * dt * inv_denominator
+        } else {
+            // Use the legacy stiffness/damping formulation.
+            match motor.motor_model {
+                MotorModel::AccelerationBased => {
+                    // Directly compute velocity change needed.
+                    motor.damping * velocity_error + motor.stiffness * position_error * dt
+                }
+                MotorModel::ForceBased => {
+                    // Torque = stiffness * position_error + damping * velocity_error
+                    // Angular velocity change = Torque * inv_inertia = Torque * w_sum
+                    // The dt scaling happens in the correction computation below.
+                    (motor.stiffness * position_error + motor.damping * velocity_error) * w_sum
+                }
             }
         };
 

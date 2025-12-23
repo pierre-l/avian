@@ -23,14 +23,19 @@ pub struct PrismaticJointSolverData {
     pub(super) free_axis1: Vector,
     pub(super) total_position_lagrange: Vector,
     pub(super) angle_constraint: FixedAngleConstraintShared,
-    /// Accumulated motor Lagrange multiplier.
+    /// Accumulated motor Lagrange multiplier for this frame.
     pub(super) total_motor_lagrange: Scalar,
+    /// Motor Lagrange multiplier from the previous frame, used for warm starting.
+    /// This is zeroed after being applied in the first substep.
+    pub(super) warm_start_motor_lagrange: Scalar,
 }
 
 impl XpbdConstraintSolverData for PrismaticJointSolverData {
     fn clear_lagrange_multipliers(&mut self) {
         self.total_position_lagrange = Vector::ZERO;
         self.angle_constraint.clear_lagrange_multipliers();
+        // Save motor lagrange for warm starting before clearing.
+        self.warm_start_motor_lagrange = self.total_motor_lagrange;
         self.total_motor_lagrange = 0.0;
     }
 
@@ -120,6 +125,22 @@ impl XpbdMotorConstraint<2> for PrismaticJoint {
         let [inertia1, inertia2] = inertias;
 
         self.apply_motor(body1, body2, inertia1, inertia2, solver_data, motor, dt);
+    }
+
+    fn warm_start_motor(
+        &self,
+        _bodies: [&mut SolverBody; 2],
+        _inertias: [&SolverBodyInertia; 2],
+        solver_data: &mut PrismaticJointSolverData,
+        _dt: Scalar,
+        _warm_start_coefficient: Scalar,
+    ) {
+        // TODO: Motor warm starting needs more investigation.
+        // Motors are active drivers rather than passive constraints, so the
+        // standard warm starting approach (apply previous impulse as initial guess)
+        // may cause overshoot when the motor continues to apply force.
+        // For now, we just clear the stored lagrange without applying it.
+        solver_data.warm_start_motor_lagrange = 0.0;
     }
 }
 
@@ -281,16 +302,33 @@ impl PrismaticJoint {
         let position_error = motor.target_position - current_position;
 
         // Compute the desired velocity change based on motor parameters.
-        let target_velocity_change = match motor.motor_model {
-            MotorModel::AccelerationBased => {
-                // Directly compute velocity change needed.
-                motor.damping * velocity_error + motor.stiffness * position_error * dt
-            }
-            MotorModel::ForceBased => {
-                // Force = stiffness * position_error + damping * velocity_error
-                // Velocity change = Force * inv_mass = Force * w_sum
-                // The dt scaling happens in the correction computation below.
-                (motor.stiffness * position_error + motor.damping * velocity_error) * w_sum
+        let target_velocity_change = if let (Some(frequency), Some(damping_ratio)) =
+            (motor.frequency, motor.damping_ratio)
+        {
+            // Use timestep-independent implicit Euler formulation.
+            // This provides stable spring-damper behavior regardless of substep count.
+            let omega = TAU * frequency;
+            let omega_sq = omega * omega;
+            let two_zeta_omega = 2.0 * damping_ratio * omega;
+
+            // Implicit Euler denominator for stability.
+            let inv_denominator = 1.0 / (1.0 + two_zeta_omega * dt + omega_sq * dt * dt);
+
+            // Compute velocity change with implicit Euler integration.
+            (omega_sq * position_error + two_zeta_omega * velocity_error) * dt * inv_denominator
+        } else {
+            // Use the legacy stiffness/damping formulation.
+            match motor.motor_model {
+                MotorModel::AccelerationBased => {
+                    // Directly compute velocity change needed.
+                    motor.damping * velocity_error + motor.stiffness * position_error * dt
+                }
+                MotorModel::ForceBased => {
+                    // Force = stiffness * position_error + damping * velocity_error
+                    // Velocity change = Force * inv_mass = Force * w_sum
+                    // The dt scaling happens in the correction computation below.
+                    (motor.stiffness * position_error + motor.damping * velocity_error) * w_sum
+                }
             }
         };
 

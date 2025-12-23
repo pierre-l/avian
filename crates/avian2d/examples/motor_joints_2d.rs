@@ -13,25 +13,32 @@
 /*
   Comparison: Avian vs Rapier Motor Implementation
 
-  | Issue                          | Avian                                                 | Rapier                                                                               |
-  |--------------------------------|-------------------------------------------------------|--------------------------------------------------------------------------------------|
-  | Motors solved separately       | Fixed - solved in same pass via XpbdMotorConstraint   | No - motors built as constraints in same pass (joint_velocity_constraint.rs:170-204) |
-  | No warm starting               | Yes - cleared each frame                              | No - impulses written back (writeback_impulses at line 354-356)                      |
-  | Stiffness scaled by substep dt | Yes - stiffness * position_error * dt                 | No - uses CFM/ERP formulation that's dt-independent (motor_model.rs:44-47)           |
-  | Max force scaling issues       | Yes - max_force * dt * dt                             | No - uses max_impulse directly in constraint bounds                                  |
-  | No SphericalJoint motor        | Yes                                                   | No - per-axis motors via joint.motors[i] array                                       |
-  | Single-axis only               | Yes                                                   | No - GenericJoint has motors per DOF                                                 |
-  | No motor state feedback        | Fixed - JointForces::motor_force()                    | joint.data.motors[i].impulse stores current impulse                                  |
+  | Issue                          | Avian                                                   | Rapier                                                                               |
+  |--------------------------------|---------------------------------------------------------|--------------------------------------------------------------------------------------|
+  | Motors solved separately       | Fixed - solved in same pass via XpbdMotorConstraint     | No - motors built as constraints in same pass (joint_velocity_constraint.rs:170-204) |
+  | No warm starting               | Partial - infrastructure added but needs tuning         | No - impulses written back (writeback_impulses at line 354-356)                      |
+  | Stiffness scaled by substep dt | Fixed - use with_spring_parameters(frequency, damping)  | No - uses CFM/ERP formulation that's dt-independent (motor_model.rs:44-47)           |
+  | Max force scaling issues       | Yes - max_force * dt * dt                               | No - uses max_impulse directly in constraint bounds                                  |
+  | No SphericalJoint motor        | Yes                                                     | No - per-axis motors via joint.motors[i] array                                       |
+  | Single-axis only               | Yes                                                     | No - GenericJoint has motors per DOF                                                 |
+  | No motor state feedback        | Fixed - JointForces::motor_force()                      | joint.data.motors[i].impulse stores current impulse                                  |
 
   Key Architectural Differences
 
   Rapier uses a unified constraint system where motors, limits, and locked DOFs are all JointConstraint instances solved together.
   Avian now solves motors in the same pass as joint constraints via solve_xpbd_joint_with_motor(), improving coupling.
 
+  Timestep-Independent Spring-Damper
+
+  Motors can now use with_spring_parameters(frequency, damping_ratio) for timestep-independent behavior:
+  - frequency: Natural frequency in Hz (higher = stiffer spring)
+  - damping_ratio: 0 = undamped, 1 = critically damped, >1 = overdamped
+
+  This uses an implicit Euler formulation similar to Rapier's CFM/ERP approach.
+
   Remaining differences from Rapier:
-  1. CFM/ERP coefficients for timestep independence (Avian still uses dt-scaled stiffness)
-  2. Warm starting via impulse writeback
-  3. Per-axis motor configuration on generic joints
+  1. Warm starting - motors are active drivers, not passive constraints, so standard warm starting causes overshoot
+  2. Per-axis motor configuration on generic joints
 */
 
 use avian2d::{math::*, prelude::*};
@@ -145,21 +152,16 @@ fn setup(mut commands: Commands) {
     // Revolute joint with position-controlled motor (servo behavior)
     // Default anchors at body centers (Vector::ZERO)
     //
-    // For AccelerationBased mode:
-    //   target_velocity_change = damping * velocity_error + stiffness * position_error * dt
-    //
-    // Since stiffness is multiplied by dt (~0.0003 with 50 substeps), we need very high
-    // stiffness relative to damping. If damping is too high, the motor will resist motion
-    // before reaching the target.
+    // Using spring parameters (frequency, damping_ratio) for timestep-independent behavior.
+    // This provides predictable spring-damper dynamics regardless of substep count.
+    // - frequency: 5 Hz = fairly stiff spring
+    // - damping_ratio: 1.0 = critically damped (fastest approach without overshoot)
     commands.spawn((
         RevoluteJoint::new(position_anchor, servo_arm),
-        AngularJointMotor {
-            target_position: 0.0,
-            stiffness: 10000.0, // Very high stiffness (multiplied by small dt)
-            damping: 1.0,       // Low damping to allow reaching target
-            max_torque: Scalar::MAX,
-            ..default()
-        },
+        AngularJointMotor::new(0.0)
+            .with_spring_parameters(5.0, 1.0)
+            .with_target_position_value(0.0)
+            .with_max_torque(Scalar::MAX),
         PositionMotorJoint,
     ));
 
@@ -201,16 +203,16 @@ fn setup(mut commands: Commands) {
 
     // Prismatic joint with linear motor
     // Default anchors at body centers (Vector::ZERO)
+    //
+    // Using spring parameters for timestep-independent position control.
+    // - frequency: 10 Hz = stiff spring
+    // - damping_ratio: 0.9 = slightly underdamped (small overshoot for snappy feel)
     commands.spawn((
         PrismaticJoint::new(piston_base, piston).with_slider_axis(Vector::Y),
-        LinearJointMotor {
-            target_position: 50.0, // Target 50 units up
-            stiffness: 2000.0,
-            damping: 0.2,
-            max_force: 5000.0,
-            motor_model: MotorModel::AccelerationBased,
-            ..default()
-        },
+        LinearJointMotor::new(0.0)
+            .with_spring_parameters(10.0, 0.9)
+            .with_target_position_value(50.0)
+            .with_max_force(5000.0),
         PrismaticMotorJoint,
     ));
 
