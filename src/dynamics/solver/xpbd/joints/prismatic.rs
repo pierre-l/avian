@@ -4,7 +4,7 @@ use crate::{
         joints::{LinearJointMotor, MotorModel},
         solver::{
             solver_body::{SolverBody, SolverBodyInertia},
-            xpbd::*,
+            xpbd::{XpbdMotorConstraint, *},
         },
     },
     prelude::*,
@@ -102,6 +102,24 @@ impl XpbdConstraint<2> for PrismaticJoint {
 
         // Constrain the relative positions of the bodies, only allowing translation along one free axis.
         self.constrain_positions(body1, body2, inertias[0], inertias[1], solver_data, dt);
+    }
+}
+
+impl XpbdMotorConstraint<2> for PrismaticJoint {
+    type Motor = LinearJointMotor;
+
+    fn solve_motor(
+        &self,
+        bodies: [&mut SolverBody; 2],
+        inertias: [&SolverBodyInertia; 2],
+        solver_data: &mut PrismaticJointSolverData,
+        motor: &LinearJointMotor,
+        dt: Scalar,
+    ) {
+        let [body1, body2] = bodies;
+        let [inertia1, inertia2] = inertias;
+
+        self.apply_motor(body1, body2, inertia1, inertia2, solver_data, motor, dt);
     }
 }
 

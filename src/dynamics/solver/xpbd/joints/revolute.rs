@@ -4,7 +4,7 @@ use crate::{
         joints::{AngularJointMotor, MotorModel},
         solver::{
             solver_body::{SolverBody, SolverBodyInertia},
-            xpbd::*,
+            xpbd::{XpbdMotorConstraint, *},
         },
     },
     prelude::*,
@@ -153,6 +153,35 @@ impl XpbdConstraint<2> for RevoluteJoint {
         solver_data
             .point_constraint
             .solve([body1, body2], inertias, self.point_compliance, dt);
+    }
+}
+
+impl XpbdMotorConstraint<2> for RevoluteJoint {
+    type Motor = AngularJointMotor;
+
+    fn solve_motor(
+        &self,
+        bodies: [&mut SolverBody; 2],
+        inertias: [&SolverBodyInertia; 2],
+        solver_data: &mut RevoluteJointSolverData,
+        motor: &AngularJointMotor,
+        dt: Scalar,
+    ) {
+        let [body1, body2] = bodies;
+        let [inertia1, inertia2] = inertias;
+
+        let inv_angular_inertia1 = inertia1.effective_inv_angular_inertia();
+        let inv_angular_inertia2 = inertia2.effective_inv_angular_inertia();
+
+        self.apply_motor(
+            body1,
+            body2,
+            inv_angular_inertia1,
+            inv_angular_inertia2,
+            solver_data,
+            motor,
+            dt,
+        );
     }
 }
 

@@ -279,7 +279,10 @@
 //! attachment position.
 
 mod plugin;
-pub use plugin::{XpbdSolverPlugin, XpbdSolverSystems, prepare_xpbd_joint, solve_xpbd_joint};
+pub use plugin::{
+    XpbdSolverPlugin, XpbdSolverSystems, prepare_xpbd_joint, solve_xpbd_joint,
+    solve_xpbd_joint_with_motor,
+};
 
 pub mod joints;
 
@@ -349,6 +352,27 @@ pub trait XpbdConstraint<const ENTITY_COUNT: usize> {
         bodies: [&mut SolverBody; ENTITY_COUNT],
         inertias: [&SolverBodyInertia; ENTITY_COUNT],
         solver_data: &mut Self::SolverData,
+        dt: Scalar,
+    );
+}
+
+/// A trait for XPBD constraints that support motors.
+///
+/// This extends [`XpbdConstraint`] to add motor solving capability.
+/// Motors are solved in the same pass as other constraints for better coupling.
+pub trait XpbdMotorConstraint<const ENTITY_COUNT: usize>: XpbdConstraint<ENTITY_COUNT> {
+    /// The motor component type for this constraint.
+    type Motor: bevy::prelude::Component;
+
+    /// Solves the motor constraint.
+    ///
+    /// This method is called after `solve` to apply motor forces/torques.
+    fn solve_motor(
+        &self,
+        bodies: [&mut SolverBody; ENTITY_COUNT],
+        inertias: [&SolverBodyInertia; ENTITY_COUNT],
+        solver_data: &mut Self::SolverData,
+        motor: &Self::Motor,
         dt: Scalar,
     );
 }
