@@ -206,14 +206,14 @@ fn setup(mut commands: Commands) {
     // Default anchors at body centers (Vector::ZERO)
     //
     // Using spring parameters for timestep-independent position control.
-    // - frequency: 10 Hz = stiff spring
-    // - damping_ratio: 0.9 = slightly underdamped (small overshoot for snappy feel)
+    // - frequency: 20 Hz = very stiff spring for fast response
+    // - damping_ratio: 1.0 = critically damped (fastest approach without overshoot)
     commands.spawn((
         PrismaticJoint::new(piston_base, piston).with_slider_axis(Vector::Y),
         LinearJointMotor::new(0.0)
-            .with_spring_parameters(10.0, 0.9)
+            .with_spring_parameters(20.0, 1.0)
             .with_target_position_value(50.0)
-            .with_max_force(5000.0),
+            .with_max_force(Scalar::MAX),
         PrismaticMotorJoint,
     ));
 
