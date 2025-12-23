@@ -18,7 +18,7 @@
   | Motors solved separately       | Fixed - solved in same pass via XpbdMotorConstraint     | No - motors built as constraints in same pass (joint_velocity_constraint.rs:170-204) |
   | No warm starting               | Fixed - applies previous impulse scaled by coefficient  | No - impulses written back (writeback_impulses at line 354-356)                      |
   | Stiffness scaled by substep dt | Fixed - use with_spring_parameters(frequency, damping)  | No - uses CFM/ERP formulation that's dt-independent (motor_model.rs:44-47)           |
-  | Max force scaling issues       | Yes - max_force * dt * dt                               | No - uses max_impulse directly in constraint bounds                                  |
+  | Max force scaling issues       | Fixed - clamps per-substep delta, not accumulated total | No - uses max_impulse directly in constraint bounds                                  |
   | No SphericalJoint motor        | Yes                                                     | No - per-axis motors via joint.motors[i] array                                       |
   | Single-axis only               | Yes                                                     | No - GenericJoint has motors per DOF                                                 |
   | No motor state feedback        | Fixed - JointForces::motor_force()                      | joint.data.motors[i].impulse stores current impulse                                  |
@@ -37,9 +37,8 @@
   This uses an implicit Euler formulation similar to Rapier's CFM/ERP approach.
 
   Remaining differences from Rapier:
-  1. Max force clamping uses dt² scaling (minor)
-  2. Per-axis motor configuration on generic joints
-  3. No SphericalJoint motor support yet
+  1. Per-axis motor configuration on generic joints
+  2. No SphericalJoint motor support yet
 */
 
 use avian2d::{math::*, prelude::*};

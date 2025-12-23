@@ -371,16 +371,9 @@ impl PrismaticJoint {
         let delta_lagrange = correction / w_sum;
 
         // Clamp the delta lagrange based on max force.
-        // max_force * dt^2 gives the max lagrange per substep.
         let delta_lagrange = if motor.max_force < Scalar::MAX && motor.max_force > 0.0 {
             let max_delta = motor.max_force * dt * dt;
-            let new_lagrange = solver_data.total_motor_lagrange + delta_lagrange;
-            if new_lagrange.abs() > max_delta {
-                let clamped = new_lagrange.clamp(-max_delta, max_delta);
-                clamped - solver_data.total_motor_lagrange
-            } else {
-                delta_lagrange
-            }
+            delta_lagrange.clamp(-max_delta, max_delta)
         } else {
             delta_lagrange
         };

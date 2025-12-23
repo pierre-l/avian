@@ -367,13 +367,7 @@ impl RevoluteJoint {
         // Clamp the delta lagrange based on max torque.
         let delta_lagrange = if motor.max_torque < Scalar::MAX && motor.max_torque > 0.0 {
             let max_delta = motor.max_torque * dt * dt;
-            let new_lagrange = solver_data.total_motor_lagrange + delta_lagrange;
-            if new_lagrange.abs() > max_delta {
-                let clamped = new_lagrange.clamp(-max_delta, max_delta);
-                clamped - solver_data.total_motor_lagrange
-            } else {
-                delta_lagrange
-            }
+            delta_lagrange.clamp(-max_delta, max_delta)
         } else {
             delta_lagrange
         };
@@ -480,14 +474,7 @@ impl RevoluteJoint {
         // Clamp the delta lagrange based on max torque.
         let delta_lagrange = if motor.max_torque < Scalar::MAX && motor.max_torque > 0.0 {
             let max_delta = motor.max_torque * dt * dt;
-            let lagrange_magnitude = solver_data.total_motor_lagrange.dot(a1);
-            let new_lagrange = lagrange_magnitude + delta_lagrange;
-            if new_lagrange.abs() > max_delta {
-                let clamped = new_lagrange.clamp(-max_delta, max_delta);
-                clamped - lagrange_magnitude
-            } else {
-                delta_lagrange
-            }
+            delta_lagrange.clamp(-max_delta, max_delta)
         } else {
             delta_lagrange
         };
