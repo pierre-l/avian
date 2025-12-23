@@ -129,17 +129,41 @@ impl XpbdMotorConstraint<2> for PrismaticJoint {
 
     fn warm_start_motor(
         &self,
-        _bodies: [&mut SolverBody; 2],
-        _inertias: [&SolverBodyInertia; 2],
+        bodies: [&mut SolverBody; 2],
+        inertias: [&SolverBodyInertia; 2],
         solver_data: &mut PrismaticJointSolverData,
         _dt: Scalar,
-        _warm_start_coefficient: Scalar,
+        warm_start_coefficient: Scalar,
     ) {
-        // TODO: Motor warm starting needs more investigation.
-        // Motors are active drivers rather than passive constraints, so the
-        // standard warm starting approach (apply previous impulse as initial guess)
-        // may cause overshoot when the motor continues to apply force.
-        // For now, we just clear the stored lagrange without applying it.
+        let [body1, body2] = bodies;
+        let [inertia1, inertia2] = inertias;
+
+        let inv_mass1 = inertia1.effective_inv_mass();
+        let inv_mass2 = inertia2.effective_inv_mass();
+        let inv_angular_inertia1 = inertia1.effective_inv_angular_inertia();
+        let inv_angular_inertia2 = inertia2.effective_inv_angular_inertia();
+
+        // Get the slider axis in world space.
+        let axis = body1.delta_rotation * solver_data.free_axis1;
+
+        // Get anchor points for angular velocity contribution.
+        let world_r1 = body1.delta_rotation * solver_data.world_r1;
+        let world_r2 = body2.delta_rotation * solver_data.world_r2;
+
+        // Apply the previous frame's motor impulse as an initial velocity change.
+        // The motor lagrange is a scalar (magnitude along the slider axis).
+        let impulse = warm_start_coefficient * solver_data.warm_start_motor_lagrange * axis;
+
+        // Apply linear impulse to both bodies.
+        // Motor impulse is positive when body2 should move in the positive axis direction.
+        body1.linear_velocity -= impulse * inv_mass1;
+        body2.linear_velocity += impulse * inv_mass2;
+
+        // Apply angular impulse from the moment arm.
+        body1.angular_velocity -= inv_angular_inertia1 * cross(world_r1, impulse);
+        body2.angular_velocity += inv_angular_inertia2 * cross(world_r2, impulse);
+
+        // Clear the warm start lagrange after applying it.
         solver_data.warm_start_motor_lagrange = 0.0;
     }
 }

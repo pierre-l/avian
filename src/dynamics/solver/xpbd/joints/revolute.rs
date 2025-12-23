@@ -189,20 +189,59 @@ impl XpbdMotorConstraint<2> for RevoluteJoint {
         );
     }
 
+    #[cfg(feature = "2d")]
     fn warm_start_motor(
         &self,
-        _bodies: [&mut SolverBody; 2],
-        _inertias: [&SolverBodyInertia; 2],
+        bodies: [&mut SolverBody; 2],
+        inertias: [&SolverBodyInertia; 2],
         solver_data: &mut RevoluteJointSolverData,
         _dt: Scalar,
-        _warm_start_coefficient: Scalar,
+        warm_start_coefficient: Scalar,
     ) {
-        // TODO: Motor warm starting needs more investigation.
-        // Motors are active drivers rather than passive constraints, so the
-        // standard warm starting approach (apply previous impulse as initial guess)
-        // may cause overshoot when the motor continues to apply force.
-        // For now, we just clear the stored lagrange without applying it.
-        solver_data.warm_start_motor_lagrange = AngularVector::ZERO;
+        let [body1, body2] = bodies;
+        let [inertia1, inertia2] = inertias;
+
+        let inv_angular_inertia1 = inertia1.effective_inv_angular_inertia();
+        let inv_angular_inertia2 = inertia2.effective_inv_angular_inertia();
+
+        // Apply the previous frame's motor impulse as an initial velocity change.
+        // This helps the solver converge faster for motors maintaining steady state.
+        let impulse = warm_start_coefficient * solver_data.warm_start_motor_lagrange;
+
+        // In 2D, angular impulse is a scalar. Apply it to angular velocities.
+        // Motor impulse is positive when body2 should rotate faster relative to body1.
+        body1.angular_velocity -= inv_angular_inertia1 * impulse;
+        body2.angular_velocity += inv_angular_inertia2 * impulse;
+
+        // Clear the warm start lagrange after applying it.
+        solver_data.warm_start_motor_lagrange = 0.0;
+    }
+
+    #[cfg(feature = "3d")]
+    fn warm_start_motor(
+        &self,
+        bodies: [&mut SolverBody; 2],
+        inertias: [&SolverBodyInertia; 2],
+        solver_data: &mut RevoluteJointSolverData,
+        _dt: Scalar,
+        warm_start_coefficient: Scalar,
+    ) {
+        let [body1, body2] = bodies;
+        let [inertia1, inertia2] = inertias;
+
+        let inv_angular_inertia1 = inertia1.effective_inv_angular_inertia();
+        let inv_angular_inertia2 = inertia2.effective_inv_angular_inertia();
+
+        // Apply the previous frame's motor impulse as an initial velocity change.
+        // In 3D, the motor lagrange is stored as a vector along the hinge axis.
+        let impulse = warm_start_coefficient * solver_data.warm_start_motor_lagrange;
+
+        // Apply angular impulse to both bodies.
+        body1.angular_velocity -= inv_angular_inertia1 * impulse;
+        body2.angular_velocity += inv_angular_inertia2 * impulse;
+
+        // Clear the warm start lagrange after applying it.
+        solver_data.warm_start_motor_lagrange = Vector::ZERO;
     }
 }
 
