@@ -276,28 +276,21 @@ impl PrismaticJoint {
         motor: &LinearJointMotor,
         dt: Scalar,
     ) {
-        // Get the slider axis in world space.
         let axis1 = body1.delta_rotation * solver_data.free_axis1;
-
-        // Compute the current position along the slider axis.
         let world_r1 = body1.delta_rotation * solver_data.world_r1;
         let world_r2 = body2.delta_rotation * solver_data.world_r2;
+
         let separation = (body2.delta_position - body1.delta_position)
             + (world_r2 - world_r1)
             + solver_data.center_difference;
         let current_position = separation.dot(axis1);
+        let current_velocity = (body2.linear_velocity - body1.linear_velocity).dot(axis1);
 
-        // Compute the linear velocity projected onto the slider axis.
-        let relative_velocity = body2.linear_velocity - body1.linear_velocity;
-        let current_velocity = relative_velocity.dot(axis1);
-
-        // Get effective inverse masses.
         let inv_mass1 = inertia1.effective_inv_mass();
         let inv_mass2 = inertia2.effective_inv_mass();
         let inv_angular_inertia1 = inertia1.effective_inv_angular_inertia();
         let inv_angular_inertia2 = inertia2.effective_inv_angular_inertia();
 
-        // Compute generalized inverse masses.
         let w1 = PositionConstraint::compute_generalized_inverse_mass(
             self,
             inv_mass1.max_element(),
@@ -318,59 +311,38 @@ impl PrismaticJoint {
             return;
         }
 
-        // Compute the motor impulse using a PD controller approach.
-        // The motor tries to drive the joint to:
-        // - target_velocity with damping strength
-        // - target_position with stiffness strength
         let velocity_error = motor.target_velocity - current_velocity;
         let position_error = motor.target_position - current_position;
 
-        // Compute the desired velocity change based on motor parameters.
         let target_velocity_change = if let (Some(frequency), Some(damping_ratio)) =
             (motor.frequency, motor.damping_ratio)
         {
-            // Use timestep-independent implicit Euler formulation.
-            // This provides stable spring-damper behavior regardless of substep count.
+            // Implicit Euler formulation for timestep-independent spring-damper behavior.
             let omega = TAU * frequency;
             let omega_sq = omega * omega;
             let two_zeta_omega = 2.0 * damping_ratio * omega;
-
-            // Implicit Euler denominator for stability.
             let inv_denominator = 1.0 / (1.0 + two_zeta_omega * dt + omega_sq * dt * dt);
-
-            // Compute velocity change with implicit Euler integration.
             (omega_sq * position_error + two_zeta_omega * velocity_error) * dt * inv_denominator
         } else {
-            // Use the legacy stiffness/damping formulation.
             match motor.motor_model {
                 MotorModel::AccelerationBased => {
-                    // Directly compute velocity change needed.
                     motor.damping * velocity_error + motor.stiffness * position_error * dt
                 }
                 MotorModel::ForceBased => {
-                    // Force = stiffness * position_error + damping * velocity_error
-                    // Velocity change = Force * inv_mass = Force * w_sum
-                    // The dt scaling happens in the correction computation below.
+                    // Velocity change = (stiffness * pos_error + damping * vel_error) * inv_mass
                     (motor.stiffness * position_error + motor.damping * velocity_error) * w_sum
                 }
             }
         };
 
-        // Convert to position correction (impulse = m * dv, but in XPBD we work with positions).
-        // The correction is the position change needed: dv * dt.
         let correction = target_velocity_change * dt;
-
-        // Skip if correction is too small.
         if correction.abs() <= Scalar::EPSILON {
             return;
         }
 
-        // Compute Lagrange multiplier update.
-        // The constraint is: we want to apply a correction of `correction` along the axis.
-        // Using XPBD: delta_lagrange = correction / w_sum (simplified for motors).
         let delta_lagrange = correction / w_sum;
 
-        // Clamp the delta lagrange based on max force.
+        // Clamp to limit instantaneous force per substep.
         let delta_lagrange = if motor.max_force < Scalar::MAX && motor.max_force > 0.0 {
             let max_delta = motor.max_force * dt * dt;
             delta_lagrange.clamp(-max_delta, max_delta)
@@ -380,15 +352,10 @@ impl PrismaticJoint {
 
         solver_data.total_motor_lagrange += delta_lagrange;
 
-        // Compute the impulse along the axis.
-        // Positive delta_lagrange should move body2 in positive axis direction relative to body1.
         let impulse = delta_lagrange * axis1;
         solver_data.total_position_lagrange += impulse;
 
-        // Apply positional correction.
-        // Note: apply_positional_impulse adds to body1 and subtracts from body2.
-        // For motors, we want body2 to move in the direction of the impulse,
-        // so we negate the impulse to get the correct direction.
+        // Negate impulse: apply_positional_impulse convention is opposite to motor direction.
         self.apply_positional_impulse(
             body1, body2, inertia1, inertia2, -impulse, world_r1, world_r2,
         );
