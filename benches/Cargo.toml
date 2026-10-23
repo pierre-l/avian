@@ -49,3 +49,9 @@ panic = 'unwind'
 incremental = false
 codegen-units = 16
 rpath = false
+
+# Parry from a local clone (branch `perf/capsule-capsule-cast` of
+# github.com/pierre-l/parry, beside this repository).
+[patch.crates-io]
+parry2d = { path = "../../parry/crates/parry2d" }
+parry3d = { path = "../../parry/crates/parry3d" }
