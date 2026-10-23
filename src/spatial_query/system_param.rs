@@ -2,6 +2,51 @@ use crate::{collider_tree::ColliderTrees, collision::collider::contact_query, pr
 use bevy::{ecs::system::SystemParam, prelude::*};
 use parry::query::ShapeCastOptions;
 
+/// Casts `shape` against one collider: what a shape cast does for each candidate collider.
+/// The hit's distance is its time of impact along `direction`.
+#[inline]
+pub(crate) fn cast_shape_against(
+    shape: &Collider,
+    origin: RVector,
+    shape_rotation: Rot,
+    direction: Dir,
+    config: &ShapeCastConfig,
+    entity: Entity,
+    collider: &Collider,
+    position: &Position,
+    rotation: &Rotation,
+) -> Option<ShapeHitData> {
+    let pose1 = make_pose(position.0, *rotation);
+    let pose2 = make_pose(origin, shape_rotation);
+
+    let Ok(Some(hit)) = parry::query::cast_shapes(
+        &pose1,
+        RVector::ZERO,
+        collider.shape_scaled().as_ref(),
+        &pose2,
+        direction.real(),
+        shape.shape_scaled().as_ref(),
+        ShapeCastOptions {
+            max_time_of_impact: config.max_distance.real(),
+            target_distance: config.target_distance.real(),
+            stop_at_penetration: !config.ignore_origin_penetration,
+            compute_impact_geometry_on_penetration: config.compute_contact_on_penetration,
+        },
+    ) else {
+        return None;
+    };
+
+    let toi = hit.time_of_impact.f32();
+    Some(ShapeHitData {
+        entity,
+        point1: pose1 * hit.witness1,
+        point2: pose2 * hit.witness2 + (direction * toi).real(),
+        normal1: (pose1.rotation * hit.normal1).f32(),
+        normal2: (pose2.rotation * hit.normal2).f32(),
+        distance: toi,
+    })
+}
+
 /// A system parameter for performing [spatial queries](spatial_query).
 ///
 /// # Methods
@@ -602,38 +647,24 @@ impl SpatialQuery<'_, '_> {
                         return f32::MAX;
                     };
 
-                    let pose1 = make_pose(position.0, *rotation);
-                    let pose2 = make_pose(origin, shape_rotation);
-
-                    let Ok(Some(hit)) = parry::query::cast_shapes(
-                        &pose1,
-                        RVector::ZERO,
-                        collider.shape_scaled().as_ref(),
-                        &pose2,
-                        direction.real(),
-                        shape.shape_scaled().as_ref(),
-                        ShapeCastOptions {
-                            max_time_of_impact: config.max_distance.real(),
-                            target_distance: config.target_distance.real(),
-                            stop_at_penetration: !config.ignore_origin_penetration,
-                            compute_impact_geometry_on_penetration: config
-                                .compute_contact_on_penetration,
-                        },
+                    let Some(hit) = cast_shape_against(
+                        shape,
+                        origin,
+                        shape_rotation,
+                        direction,
+                        config,
+                        proxy.collider,
+                        collider,
+                        position,
+                        rotation,
                     ) else {
                         return f32::MAX;
                     };
 
-                    let toi = hit.time_of_impact.f32();
+                    let toi = hit.distance;
                     if toi < closest_distance {
                         closest_distance = toi;
-                        closest_hit = Some(ShapeHitData {
-                            entity: proxy.collider,
-                            point1: pose1 * hit.witness1,
-                            point2: pose2 * hit.witness2 + (direction * toi).real(),
-                            normal1: (pose1.rotation * hit.normal1).f32(),
-                            normal2: (pose2.rotation * hit.normal2).f32(),
-                            distance: toi,
-                        });
+                        closest_hit = Some(hit);
                     }
                     toi
                 },

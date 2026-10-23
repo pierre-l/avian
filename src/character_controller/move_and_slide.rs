@@ -248,6 +248,33 @@ impl From<&MoveAndSlideConfig> for DepenetrationConfig {
     }
 }
 
+/// How far beyond its reach [`MoveAndSlide::move_and_slide`] gathers candidate colliders,
+/// before being scaled by the [`PhysicsLengthUnit`]. It covers the initial depenetration's push
+/// in most moves; a query that still reaches beyond the gathered bounds searches the collider
+/// trees instead.
+const MOVE_CANDIDATES_SLACK: f32 = 0.1;
+
+/// The colliders a move can touch, gathered with one query of the collider trees, so that the
+/// move's shape casts and intersection tests don't each search the trees again.
+struct MoveCandidates<'a> {
+    /// The box the candidates were gathered in. A query reaching outside of it searches the
+    /// collider trees instead, so callbacks that move the character stay correct.
+    bounds: ColliderAabb,
+    /// The colliders that pass the move's filter, in the order the collider trees yield them.
+    /// A `Vec` scanned in full: a move touches a handful of colliders.
+    colliders: Vec<MoveCandidate<'a>>,
+}
+
+/// A collider a move can touch, with what the narrow phase reads.
+struct MoveCandidate<'a> {
+    entity: Entity,
+    collider: &'a Collider,
+    position: &'a Position,
+    rotation: &'a Rotation,
+    /// The collider's tight AABB, to skip it in queries it cannot reach.
+    aabb: ColliderAabb,
+}
+
 /// Output from [`MoveAndSlide::move_and_slide`].
 #[derive(Clone, Copy, Debug, PartialEq, Reflect)]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize, serde::Deserialize))]
@@ -497,9 +524,29 @@ impl<'w, 's> MoveAndSlide<'w, 's> {
         let mut time_left = delta_time.as_secs_f32();
         let skin_width = self.length_unit.0 * config.skin_width;
 
+        // Everything this move can reach, gathered once. Sliding along contact planes only ever
+        // shortens the remaining movement, so the character stays within `|velocity| * time`
+        // of where it starts, and contacts are collected up to twice the skin width away.
+        let reach = velocity.length() * time_left
+            + 2.0 * skin_width
+            + self.length_unit.0 * MOVE_CANDIDATES_SLACK;
+        let candidates = self.move_candidates(
+            shape
+                .aabb(position, shape_rotation, 0.0)
+                .grow(Vector::splat(reach)),
+            filter,
+        );
+        let candidates = Some(&candidates);
+
         // Initial depenetration pass
-        let depenetration_offset =
-            self.depenetrate(shape, position, shape_rotation, &config.into(), filter);
+        let depenetration_offset = self.depenetrate_in(
+            candidates,
+            shape,
+            position,
+            shape_rotation,
+            &config.into(),
+            filter,
+        );
         position += depenetration_offset.real();
 
         // The intersections found by the last iteration, as depenetration uses them,
@@ -527,9 +574,15 @@ impl<'w, 's> MoveAndSlide<'w, 's> {
             }
 
             // Sweep the shape along the velocity vector.
-            let Some(sweep_hit) =
-                self.cast_move(shape, position, shape_rotation, sweep, skin_width, filter)
-            else {
+            let Some(sweep_hit) = self.cast_move_in(
+                candidates,
+                shape,
+                position,
+                shape_rotation,
+                sweep,
+                skin_width,
+                filter,
+            ) else {
                 // No collision, move the full distance.
                 position += sweep.real();
                 break;
@@ -569,7 +622,8 @@ impl<'w, 's> MoveAndSlide<'w, 's> {
             let mut reached_max_planes = false;
             let query_position = position;
             last_intersections.clear();
-            self.intersections(
+            self.intersections_in(
+                candidates,
                 shape,
                 position,
                 shape_rotation,
@@ -645,7 +699,14 @@ impl<'w, 's> MoveAndSlide<'w, 's> {
             Some(queried_at) if queried_at == position => {
                 self.depenetrate_intersections(&config.into(), &last_intersections)
             }
-            _ => self.depenetrate(shape, position, shape_rotation, &config.into(), filter),
+            _ => self.depenetrate_in(
+                candidates,
+                shape,
+                position,
+                shape_rotation,
+                &config.into(),
+                filter,
+            ),
         };
         position += depenetration_offset.real();
 
@@ -785,22 +846,86 @@ impl<'w, 's> MoveAndSlide<'w, 's> {
         skin_width: f32,
         filter: &SpatialQueryFilter,
     ) -> Option<MoveHitData> {
-        let (direction, distance) = Dir::new_and_length(movement).unwrap_or((Dir::X, 0.0));
-        let distance = distance + skin_width;
-        let shape_hit = self.spatial_query.cast_shape_predicate(
+        self.cast_move_in(
+            None,
             shape,
             shape_position,
-            shape_rotation,
-            direction,
-            &ShapeCastConfig {
-                ignore_origin_penetration: true,
-                ..ShapeCastConfig::from_max_distance(distance)
-            },
+            shape_rotation.into(),
+            movement,
+            skin_width,
             filter,
-            // Make sure we don't hit sensors.
-            // TODO: Replace this when spatial queries support excluding sensors directly.
-            &|entity| self.colliders.contains(entity),
-        )?;
+        )
+    }
+
+    /// [`Self::cast_move`], against the given candidates when the cast stays within their bounds.
+    fn cast_move_in(
+        &self,
+        candidates: Option<&MoveCandidates>,
+        shape: &Collider,
+        shape_position: RVector,
+        shape_rotation: Rot,
+        movement: Vector,
+        skin_width: f32,
+        filter: &SpatialQueryFilter,
+    ) -> Option<MoveHitData> {
+        let (direction, distance) = Dir::new_and_length(movement).unwrap_or((Dir::X, 0.0));
+        let distance = distance + skin_width;
+        let cast_config = ShapeCastConfig {
+            ignore_origin_penetration: true,
+            ..ShapeCastConfig::from_max_distance(distance)
+        };
+
+        // Everywhere the shape goes on its way: the box of the shape at the start and at the end,
+        // with the skin width as a margin for rounding.
+        let swept = shape
+            .aabb(shape_position, shape_rotation, skin_width)
+            .merged(shape.aabb(
+                shape_position + (direction * distance).real(),
+                shape_rotation,
+                skin_width,
+            ));
+        let shape_hit = match candidates.filter(|candidates| candidates.bounds.contains(&swept)) {
+            Some(candidates) => {
+                // The closest hit, the first one in the candidates' order among equals. The trees'
+                // traversal visits nearer colliders first, so it can pick another among equals.
+                let mut closest: Option<ShapeHitData> = None;
+                for candidate in candidates.colliders.iter() {
+                    if !candidate.aabb.intersects(&swept) {
+                        continue;
+                    }
+                    let Some(hit) = cast_shape_against(
+                        shape,
+                        shape_position,
+                        shape_rotation,
+                        direction,
+                        &cast_config,
+                        candidate.entity,
+                        candidate.collider,
+                        candidate.position,
+                        candidate.rotation,
+                    ) else {
+                        continue;
+                    };
+                    let closest_distance =
+                        closest.map_or(cast_config.max_distance, |closest| closest.distance);
+                    if hit.distance < closest_distance {
+                        closest = Some(hit);
+                    }
+                }
+                closest
+            }
+            None => self.spatial_query.cast_shape_predicate(
+                shape,
+                shape_position,
+                shape_rotation,
+                direction,
+                &cast_config,
+                filter,
+                // Make sure we don't hit sensors.
+                // TODO: Replace this when spatial queries support excluding sensors directly.
+                &|entity| self.colliders.contains(entity),
+            ),
+        }?;
         let safe_distance = if distance == 0.0 {
             0.0
         } else {
@@ -898,13 +1023,34 @@ impl<'w, 's> MoveAndSlide<'w, 's> {
         config: &DepenetrationConfig,
         filter: &SpatialQueryFilter,
     ) -> Vector {
+        self.depenetrate_in(
+            None,
+            shape,
+            shape_position,
+            shape_rotation.into(),
+            config,
+            filter,
+        )
+    }
+
+    /// [`Self::depenetrate`], against the given candidates when the query stays within their bounds.
+    fn depenetrate_in(
+        &self,
+        candidates: Option<&MoveCandidates>,
+        shape: &Collider,
+        shape_position: RVector,
+        shape_rotation: Rot,
+        config: &DepenetrationConfig,
+        filter: &SpatialQueryFilter,
+    ) -> Vector {
         if config.depenetration_iterations == 0 {
             // Depenetration disabled
             return Vector::ZERO;
         }
 
         let mut intersections = Vec::new();
-        self.intersections(
+        self.intersections_in(
+            candidates,
             shape,
             shape_position,
             shape_rotation,
@@ -1051,48 +1197,126 @@ impl<'w, 's> MoveAndSlide<'w, 's> {
         shape_rotation: impl Into<Rot>,
         prediction_distance: f32,
         filter: &SpatialQueryFilter,
+        callback: impl FnMut(Entity, &ContactPoint, Dir) -> bool,
+    ) {
+        self.intersections_in(
+            None,
+            shape,
+            shape_position,
+            shape_rotation.into(),
+            prediction_distance,
+            filter,
+            callback,
+        );
+    }
+
+    /// [`Self::intersections`], against the given candidates when the query stays within their bounds.
+    fn intersections_in(
+        &self,
+        candidates: Option<&MoveCandidates>,
+        shape: &Collider,
+        shape_position: RVector,
+        shape_rotation: Rot,
+        prediction_distance: f32,
+        filter: &SpatialQueryFilter,
         mut callback: impl FnMut(Entity, &ContactPoint, Dir) -> bool,
     ) {
-        let shape_rotation = shape_rotation.into();
         let expanded_aabb = shape.aabb(shape_position, shape_rotation, prediction_distance);
-        let aabb_intersections = self
-            .spatial_query
-            .aabb_intersections_with_aabb(expanded_aabb);
+        let mut contacts_with =
+            |entity: Entity, collider: &Collider, position: &Position, rotation: &Rotation| {
+                let mut manifolds = Vec::new();
+                contact_manifolds(
+                    shape,
+                    shape_position,
+                    shape_rotation,
+                    collider,
+                    position.0,
+                    *rotation,
+                    prediction_distance,
+                    &mut manifolds,
+                );
+                for manifold in manifolds {
+                    let Some(deepest) = manifold.find_deepest_contact() else {
+                        continue;
+                    };
 
-        'outer: for intersection_entity in aabb_intersections {
-            let Ok((intersection_collider, intersection_pos, intersection_rot, layers)) =
-                self.colliders.get(intersection_entity)
-            else {
-                continue;
+                    let normal = Dir::new_unchecked(-manifold.normal);
+
+                    if !callback(entity, deepest, normal) {
+                        // Abort further processing.
+                        return false;
+                    }
+                }
+                true
             };
-            let layers = layers.copied().unwrap_or_default();
-            if !filter.test(intersection_entity, layers) {
-                continue;
+
+        match candidates.filter(|candidates| candidates.bounds.contains(&expanded_aabb)) {
+            Some(candidates) => {
+                for candidate in candidates.colliders.iter() {
+                    if candidate.aabb.intersects(&expanded_aabb)
+                        && !contacts_with(
+                            candidate.entity,
+                            candidate.collider,
+                            candidate.position,
+                            candidate.rotation,
+                        )
+                    {
+                        break;
+                    }
+                }
             }
-            let mut manifolds = Vec::new();
-            contact_manifolds(
-                shape,
-                shape_position,
-                shape_rotation,
-                intersection_collider,
-                intersection_pos.0,
-                *intersection_rot,
-                prediction_distance,
-                &mut manifolds,
-            );
-            for manifold in manifolds {
-                let Some(deepest) = manifold.find_deepest_contact() else {
-                    continue;
-                };
+            None => {
+                let aabb_intersections = self
+                    .spatial_query
+                    .aabb_intersections_with_aabb(expanded_aabb);
 
-                let normal = Dir::new_unchecked(-manifold.normal);
-
-                if !callback(intersection_entity, deepest, normal) {
-                    // Abort further processing.
-                    break 'outer;
+                for intersection_entity in aabb_intersections {
+                    let Ok((intersection_collider, intersection_pos, intersection_rot, layers)) =
+                        self.colliders.get(intersection_entity)
+                    else {
+                        continue;
+                    };
+                    let layers = layers.copied().unwrap_or_default();
+                    if !filter.test(intersection_entity, layers) {
+                        continue;
+                    }
+                    if !contacts_with(
+                        intersection_entity,
+                        intersection_collider,
+                        intersection_pos,
+                        intersection_rot,
+                    ) {
+                        break;
+                    }
                 }
             }
         }
+    }
+
+    /// Gathers the colliders a move can touch with one query of the collider trees: those that
+    /// pass `filter` and whose AABBs intersect `bounds`.
+    fn move_candidates(
+        &self,
+        bounds: ColliderAabb,
+        filter: &SpatialQueryFilter,
+    ) -> MoveCandidates<'_> {
+        let mut colliders = Vec::new();
+        self.spatial_query
+            .aabb_intersections_with_aabb_callback(bounds, |entity| {
+                if let Ok((collider, position, rotation, layers)) = self.colliders.get(entity)
+                    && filter.test(entity, layers.copied().unwrap_or_default())
+                {
+                    colliders.push(MoveCandidate {
+                        entity,
+                        collider,
+                        position,
+                        rotation,
+                        aabb: collider.aabb(position.0, *rotation, 0.0),
+                    });
+                }
+                true
+            });
+        MoveCandidates { bounds, colliders }
     }
 
     /// Projects input velocity `v` onto the planes defined by the given `normals`.
