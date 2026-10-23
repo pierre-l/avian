@@ -168,12 +168,12 @@ pub fn run(benchmark: &Benchmark, args: &Args) {
                 format!(
                     "benchmark,avg_step_ms,min_step_ms,p50_step_ms,p99_step_ms,p999_step_ms,max_step_ms\n{},{},{},{},{},{},{}\n",
                     benchmark.name,
-                    result.average_time.as_secs_f64(),
-                    result.min_time.as_secs_f64(),
-                    result.percentiles.p50.as_secs_f64(),
-                    result.percentiles.p99.as_secs_f64(),
-                    result.percentiles.p999.as_secs_f64(),
-                    result.percentiles.max.as_secs_f64(),
+                    result.average_time.as_secs_f64() * 1000.0,
+                    result.min_time.as_secs_f64() * 1000.0,
+                    result.percentiles.p50.as_secs_f64() * 1000.0,
+                    result.percentiles.p99.as_secs_f64() * 1000.0,
+                    result.percentiles.p999.as_secs_f64() * 1000.0,
+                    result.percentiles.max.as_secs_f64() * 1000.0,
                 ),
             )
             .unwrap();
