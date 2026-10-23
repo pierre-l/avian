@@ -502,6 +502,12 @@ impl<'w, 's> MoveAndSlide<'w, 's> {
             self.depenetrate(shape, position, shape_rotation, &config.into(), filter);
         position += depenetration_offset.real();
 
+        // The intersections found by the last iteration, as depenetration uses them,
+        // and the position they were found at. If the character ends up there,
+        // the final depenetration pass can reuse them instead of querying again.
+        let mut last_intersections: Vec<(Dir, f32)> = Vec::new();
+        let mut last_intersections_position: Option<RVector> = None;
+
         // Main move and slide loop:
         // 1. Sweep the shape along the velocity vector
         // 2. If we hit something, move up to the hit point
@@ -560,6 +566,9 @@ impl<'w, 's> MoveAndSlide<'w, 's> {
 
             // Collect contact planes.
             let mut aborted = false;
+            let mut reached_max_planes = false;
+            let query_position = position;
+            last_intersections.clear();
             self.intersections(
                 shape,
                 position,
@@ -569,6 +578,10 @@ impl<'w, 's> MoveAndSlide<'w, 's> {
                 skin_width * 2.0,
                 filter,
                 |_, contact_point, mut normal| {
+                    // Keep every contact for depenetration. Those beyond the skin width have a
+                    // negative distance, and only constrain a fixup that would move towards them.
+                    last_intersections.push((normal, contact_point.penetration + skin_width));
+
                     // Check if this plane is nearly parallel to an existing one.
                     // This can help prune redundant planes for velocity clipping.
                     for existing_normal in planes.iter_mut() {
@@ -584,6 +597,7 @@ impl<'w, 's> MoveAndSlide<'w, 's> {
                     }
 
                     if planes.len() >= config.max_planes {
+                        reached_max_planes = true;
                         return false;
                     }
 
@@ -613,6 +627,10 @@ impl<'w, 's> MoveAndSlide<'w, 's> {
                 },
             );
 
+            // Only a query that ran to the end found every intersection.
+            last_intersections_position =
+                (!aborted && !reached_max_planes).then_some(query_position);
+
             // Project velocity to slide along contact planes.
             velocity = Self::project_velocity(velocity, &planes);
 
@@ -621,10 +639,14 @@ impl<'w, 's> MoveAndSlide<'w, 's> {
             }
         }
 
-        // Final depenetration pass
-        // TODO: We could get the intersections from the last iteration and avoid re-querying them here.
-        let depenetration_offset =
-            self.depenetrate(shape, position, shape_rotation, &config.into(), filter);
+        // Final depenetration pass. If the character hasn't moved since the last iteration's
+        // intersection query, reuse its intersections instead of querying them again.
+        let depenetration_offset = match last_intersections_position {
+            Some(queried_at) if queried_at == position => {
+                self.depenetrate_intersections(&config.into(), &last_intersections)
+            }
+            _ => self.depenetrate(shape, position, shape_rotation, &config.into(), filter),
+        };
         position += depenetration_offset.real();
 
         MoveAndSlideOutput {
