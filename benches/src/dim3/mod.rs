@@ -10,6 +10,7 @@ use bevy::{
 
 use crate::Benchmark;
 
+mod character_crowd;
 mod large_pyramid;
 mod many_pyramids;
 
@@ -20,6 +21,9 @@ pub const BENCHMARKS: &[Benchmark] = &[
     }),
     Benchmark::new("Many Pyramids 3D", "many_pyramids", || {
         many_pyramids::create_bench(10, 10, 10)
+    }),
+    Benchmark::new("Character Crowd 3D", "character_crowd", || {
+        character_crowd::create_bench(3000, 1.0)
     }),
 ];
 

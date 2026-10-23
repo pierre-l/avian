@@ -87,6 +87,41 @@ pub struct BenchmarkResult {
     pub average_time: Duration,
     /// The minimum time taken for a single step in the benchmark.
     pub min_time: Duration,
+    /// Step time percentiles, over the steps of every repetition.
+    pub percentiles: Percentiles,
+}
+
+/// Percentiles of the step time, for the tail latency that averages hide.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Percentiles {
+    pub p50: Duration,
+    pub p99: Duration,
+    pub p999: Duration,
+    pub max: Duration,
+}
+
+impl Percentiles {
+    /// Computes the percentiles of the given step times, using the nearest-rank method.
+    fn from_step_times(step_times: &mut [Duration]) -> Self {
+        step_times.sort_unstable();
+        let rank = |p: f64| {
+            let index = (p * step_times.len() as f64).ceil() as usize;
+            step_times[index.clamp(1, step_times.len()) - 1]
+        };
+        Self {
+            p50: rank(0.5),
+            p99: rank(0.99),
+            p999: rank(0.999),
+            max: step_times[step_times.len() - 1],
+        }
+    }
+
+    fn print(&self) {
+        println!("p50 step time (s): {}", self.p50.as_secs_f64());
+        println!("p99 step time (s): {}", self.p99.as_secs_f64());
+        println!("p99.9 step time (s): {}", self.p999.as_secs_f64());
+        println!("Max step time (s): {}", self.max.as_secs_f64());
+    }
 }
 
 /// Lists all available benchmarks in the console.
@@ -115,6 +150,9 @@ pub fn run(benchmark: &Benchmark, args: &Args) {
                 repeat: args.repeat,
             },
         );
+        // The percentiles come first: when running with a range of threads, the parent
+        // process reads the average and minimum from the last two lines.
+        result.percentiles.print();
         println!("Avg step time (s): {}", result.average_time.as_secs_f64());
         println!("Min step time (s): {}", result.min_time.as_secs_f64());
         if let Some(output_dir) = &args.output {
@@ -128,10 +166,14 @@ pub fn run(benchmark: &Benchmark, args: &Args) {
             std::fs::write(
                 &path,
                 format!(
-                    "benchmark,avg_step_ms,min_step_ms\n{},{},{}\n",
+                    "benchmark,avg_step_ms,min_step_ms,p50_step_ms,p99_step_ms,p999_step_ms,max_step_ms\n{},{},{},{},{},{},{}\n",
                     benchmark.name,
                     result.average_time.as_secs_f64(),
-                    result.min_time.as_secs_f64()
+                    result.min_time.as_secs_f64(),
+                    result.percentiles.p50.as_secs_f64(),
+                    result.percentiles.p99.as_secs_f64(),
+                    result.percentiles.p999.as_secs_f64(),
+                    result.percentiles.max.as_secs_f64(),
                 ),
             )
             .unwrap();
@@ -160,11 +202,11 @@ pub fn run_all(benchmarks: &[Benchmark], args: &Args) {
         );
         let max_benchmark_name_len = benchmarks.iter().map(|b| b.name.len()).max().unwrap_or(0);
         println!(
-            "| benchmark{} | avg time / step | min time / step |",
+            "| benchmark{} | avg time / step | min time / step |   p50 time / step |   p99 time / step | p99.9 time / step |   max time / step |",
             " ".repeat(max_benchmark_name_len.max(9) - 9)
         );
         println!(
-            "| {} | --------------- | --------------- |",
+            "| {} | --------------- | --------------- | ----------------- | ----------------- | ----------------- | ----------------- |",
             "-".repeat(max_benchmark_name_len.max(9))
         );
 
@@ -179,10 +221,14 @@ pub fn run_all(benchmarks: &[Benchmark], args: &Args) {
                 },
             );
             println!(
-                "| {:<9} | {:>10.10} ms | {:>10.10} ms |",
+                "| {:<9} | {:>10.10} ms | {:>10.10} ms | {:>12.12} ms | {:>12.12} ms | {:>12.12} ms | {:>12.12} ms |",
                 benchmark.name,
                 result.average_time.as_secs_f64() * 1000.0,
-                result.min_time.as_secs_f64() * 1000.0
+                result.min_time.as_secs_f64() * 1000.0,
+                result.percentiles.p50.as_secs_f64() * 1000.0,
+                result.percentiles.p99.as_secs_f64() * 1000.0,
+                result.percentiles.p999.as_secs_f64() * 1000.0,
+                result.percentiles.max.as_secs_f64() * 1000.0,
             );
             results.push((benchmark.name, result));
         }
@@ -191,13 +237,17 @@ pub fn run_all(benchmarks: &[Benchmark], args: &Args) {
             std::fs::create_dir_all(output_dir).unwrap();
             // Write the CSV file
             let mut csv = String::new();
-            csv.push_str("benchmark,avg_step_ms,min_step_ms\n");
+            csv.push_str("benchmark,avg_step_ms,min_step_ms,p50_step_ms,p99_step_ms,p999_step_ms,max_step_ms\n");
             for (name, result) in results {
                 csv.push_str(&format!(
-                    "{},{:.10},{:.10}\n",
+                    "{},{:.10},{:.10},{:.10},{:.10},{:.10},{:.10}\n",
                     name,
                     result.average_time.as_secs_f64() * 1000.0,
-                    result.min_time.as_secs_f64() * 1000.0
+                    result.min_time.as_secs_f64() * 1000.0,
+                    result.percentiles.p50.as_secs_f64() * 1000.0,
+                    result.percentiles.p99.as_secs_f64() * 1000.0,
+                    result.percentiles.p999.as_secs_f64() * 1000.0,
+                    result.percentiles.max.as_secs_f64() * 1000.0,
                 ));
             }
             let path = format!("{output_dir}/benchmarks_{}_threads.csv", args.threads.start);
@@ -327,6 +377,8 @@ fn run_benchmark_with_child_process(
     Ok(BenchmarkResult {
         average_time: Duration::from_secs_f64(avg_time),
         min_time: Duration::from_secs_f64(min_time),
+        // Only the average is reported when running with a range of threads.
+        percentiles: Percentiles::default(),
     })
 }
 
@@ -354,6 +406,9 @@ fn run_benchmark(builder: impl Fn() -> App, options: &BenchmarkOptions) -> Bench
 
     let mut average_time = Duration::ZERO;
     let mut average_min_time = Duration::ZERO;
+    // The steps of every repetition, pooled for the percentiles:
+    // the average of each repetition's p99 would not be a p99.
+    let mut step_times = Vec::with_capacity((options.steps * options.repeat) as usize);
 
     for _ in 0..options.repeat {
         let mut app = builder();
@@ -379,6 +434,7 @@ fn run_benchmark(builder: impl Fn() -> App, options: &BenchmarkOptions) -> Bench
             let start = std::time::Instant::now();
             app.update();
             let step_time = start.elapsed();
+            step_times.push(step_time);
 
             // Update the average time and minimum time.
             average_step_time += step_time;
@@ -401,5 +457,6 @@ fn run_benchmark(builder: impl Fn() -> App, options: &BenchmarkOptions) -> Bench
     BenchmarkResult {
         average_time,
         min_time: average_min_time,
+        percentiles: Percentiles::from_step_times(&mut step_times),
     }
 }
